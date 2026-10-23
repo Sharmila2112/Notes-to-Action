@@ -19,3 +19,19 @@ Each extraction records start and finish events for these steps:
 - Invalid JSON gets one stricter-prompt retry. If the response is still invalid, the app extracts lines beginning with `-`, `*`, `TODO`, or `[ ]` and records the fallback.
 - The “Simulate failures” option injects a real first-attempt model-call error about half the time. Related event details start with `(demo mode)`.
 - Empty or overlong notes create a run before validation; invalid runs are marked failed and keep the original input and event history.
+
+## Automated extraction tests
+
+Run `pnpm --filter @workspace/api-server test` from the workspace root.
+
+The service tests inject a scripted provider, in-memory persistence, a virtual
+clock, abort signals, and fixed random values. They do not load the live AI
+client or connect to PostgreSQL, and a network guard fails the suite if a test
+attempts to use `fetch`.
+
+Coverage includes provider errors and timeouts, empty responses, retry limits,
+demo-mode markers, stricter JSON prompts, fallback extraction (including zero
+matching lines), ordered diagram events and attempt numbers, save/finalization
+errors, and readable failed-run snapshots retaining the original input. A
+stricter request that exhausts its transport retries is terminal; the line
+fallback is used when both received responses fail JSON/task validation.

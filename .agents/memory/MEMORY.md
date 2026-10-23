@@ -1,0 +1,1 @@
+- [Offline AI tests](offline-ai-tests.md) — automated extraction recovery tests must not spend model credits.

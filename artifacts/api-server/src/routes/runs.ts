@@ -22,18 +22,11 @@ import {
 } from "@workspace/db";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../lib/logger";
-import {
-  extractTasksFromLines,
-  parseModelTasks,
-  transitionRunStatus,
-  type ExtractedTask,
-} from "../lib/run-domain";
+import { transitionRunStatus } from "../lib/run-domain";
+import { createRunService, shortDetail } from "../lib/run-service";
 
 const router: IRouter = Router();
 const MAX_INPUT_LENGTH = 10_000;
-const MODEL_TIMEOUT_MS = 20_000;
-const RETRY_DELAY_MS = 350;
-const MODEL_NAME = "gpt-5.6-terra";
 
 type Step = (typeof runEventsTable.step.enumValues)[number];
 type EventStatus = (typeof runEventsTable.status.enumValues)[number];
@@ -41,11 +34,6 @@ type ApiRunRecord = Pick<
   Run,
   "id" | "inputText" | "status" | "startedAt" | "finishedAt" | "error"
 >;
-
-function shortDetail(value: unknown): string {
-  const message = value instanceof Error ? value.message : String(value);
-  return message.slice(0, 240);
-}
 
 function toRunApi(run: ApiRunRecord) {
   return {
@@ -109,298 +97,28 @@ async function updateRunStatus(
   return updated;
 }
 
-async function finishRun(
-  runId: string,
-  finalStatus: "succeeded" | "failed",
-  error: string | null = null,
-): Promise<void> {
-  const startedAt = Date.now();
-  await writeEvent(runId, "finish_run", "started", "Finalizing the run status.");
-  try {
-    await updateRunStatus(runId, finalStatus, error);
-    await writeEvent(
-      runId,
-      "finish_run",
-      "succeeded",
-      finalStatus === "succeeded"
-        ? "Run completed successfully."
-        : "Run marked failed; the original notes are retained.",
-      Date.now() - startedAt,
-    );
-  } catch (cause) {
-    await writeEvent(
-      runId,
-      "finish_run",
-      "failed",
-      `Could not finalize the run: ${shortDetail(cause)}`,
-      Date.now() - startedAt,
-    );
-    throw cause;
-  }
-}
-
-function modelPrompt(input: string, strict: boolean): string {
-  return [
-    strict
-      ? "Return exactly one valid JSON object with a tasks array. Do not add markdown, prose, or code fences."
-      : "Extract actionable tasks from the notes and return JSON only.",
-    'Use this exact shape: {"tasks":[{"title":"...","owner":"person or unassigned","due_date":"YYYY-MM-DD or null","priority":"low|medium|high"}]}.',
-    "Do not invent details. Use owner 'unassigned' and due_date null when absent. Each task must have a non-empty title and a valid priority.",
-    "Meeting notes:",
-    input,
-  ].join("\n\n");
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function callModelWithRetry(
-  runId: string,
-  input: string,
-  strict: boolean,
-  simulateFailures: boolean,
-  attemptState: { value: number; simulationChecked: boolean },
-): Promise<string> {
-  for (let localAttempt = 0; localAttempt < 2; localAttempt += 1) {
-    const attempt = ++attemptState.value;
-    const startedAt = Date.now();
-    await writeEvent(
-      runId,
-      "call_model",
-      "started",
-      strict ? "Requesting a stricter JSON response from the model." : "Requesting task JSON from the model.",
-      0,
-      attempt,
-    );
-    try {
-      if (simulateFailures && !attemptState.simulationChecked) {
-        attemptState.simulationChecked = true;
-        if (Math.random() < 0.5) {
-          throw new Error("(demo mode) Simulated first-attempt model error.");
-        }
+const { finishRun, processRun } = createRunService({
+  writeEvent,
+  updateRunStatus,
+  createCompletion: (request, options) => openai.chat.completions.create(request, options),
+  reportError: (err, runId, message) => logger.error({ err, runId }, message),
+  saveTasks: async (runId, tasks) => {
+    await db.transaction(async (tx) => {
+      if (tasks.length) {
+        await tx.insert(tasksTable).values(
+          tasks.map((task) => ({
+            runId,
+            title: task.title,
+            owner: task.owner,
+            dueDate: task.due_date,
+            priority: task.priority,
+            done: false,
+          })),
+        );
       }
-
-      const completion = await openai.chat.completions.create(
-        {
-          model: MODEL_NAME,
-          max_completion_tokens: 8192,
-          response_format: { type: "json_object" },
-          messages: [{ role: "user", content: modelPrompt(input, strict) }],
-        },
-        { signal: AbortSignal.timeout(MODEL_TIMEOUT_MS) },
-      );
-      const content = completion.choices[0]?.message?.content;
-      if (!content) throw new Error("Model returned an empty response.");
-      await writeEvent(
-        runId,
-        "call_model",
-        "succeeded",
-        "Model returned a JSON response.",
-        Date.now() - startedAt,
-        attempt,
-      );
-      return content;
-    } catch (cause) {
-      const detail = shortDetail(cause);
-      await writeEvent(
-        runId,
-        "call_model",
-        "failed",
-        detail,
-        Date.now() - startedAt,
-        attempt,
-      );
-      if (localAttempt === 1) throw cause;
-
-      await writeEvent(
-        runId,
-        "call_model",
-        "retrying",
-        detail.startsWith("(demo mode)")
-          ? `(demo mode) Retrying once after the simulated model error.`
-          : "Retrying once after the model call failed.",
-        0,
-        attempt + 1,
-      );
-      await delay(RETRY_DELAY_MS);
-    }
-  }
-  throw new Error("Model call did not complete.");
-}
-
-async function parseTasksWithRecovery(
-  runId: string,
-  input: string,
-  initialContent: string,
-  simulateFailures: boolean,
-  attemptState: { value: number; simulationChecked: boolean },
-): Promise<ExtractedTask[]> {
-  const firstStartedAt = Date.now();
-  await writeEvent(
-    runId,
-    "parse_output",
-    "started",
-    "Parsing and validating model task JSON.",
-    0,
-    1,
-  );
-
-  try {
-    const tasks = parseModelTasks(initialContent);
-    await writeEvent(
-      runId,
-      "parse_output",
-      "succeeded",
-      `Found ${tasks.length} valid tasks.`,
-      Date.now() - firstStartedAt,
-      1,
-    );
-    return tasks;
-  } catch (firstError) {
-    await writeEvent(
-      runId,
-      "parse_output",
-      "failed",
-      shortDetail(firstError),
-      Date.now() - firstStartedAt,
-      1,
-    );
-    await writeEvent(
-      runId,
-      "call_model",
-      "retrying",
-      "Retrying once with a stricter JSON prompt after invalid output.",
-      0,
-      2,
-    );
-
-    const strictContent = await callModelWithRetry(
-      runId,
-      input,
-      true,
-      simulateFailures,
-      attemptState,
-    );
-    const secondStartedAt = Date.now();
-    await writeEvent(
-      runId,
-      "parse_output",
-      "started",
-      "Validating the stricter model response.",
-      0,
-      2,
-    );
-    try {
-      const tasks = parseModelTasks(strictContent);
-      await writeEvent(
-        runId,
-        "parse_output",
-        "succeeded",
-        `Strict response contained ${tasks.length} valid tasks.`,
-        Date.now() - secondStartedAt,
-        2,
-      );
-      return tasks;
-    } catch (secondError) {
-      await writeEvent(
-        runId,
-        "parse_output",
-        "failed",
-        shortDetail(secondError),
-        Date.now() - secondStartedAt,
-        2,
-      );
-      await writeEvent(
-        runId,
-        "parse_output",
-        "retrying",
-        "Using the line-based fallback after two invalid model responses.",
-        0,
-        3,
-      );
-      const tasks = extractTasksFromLines(input);
-      await writeEvent(
-        runId,
-        "parse_output",
-        "succeeded",
-        `Fallback extracted ${tasks.length} task${tasks.length === 1 ? "" : "s"} from matching lines.`,
-        0,
-        3,
-      );
-      return tasks;
-    }
-  }
-}
-
-async function processRun(
-  runId: string,
-  input: string,
-  simulateFailures: boolean,
-): Promise<void> {
-  try {
-    const attemptState = { value: 0, simulationChecked: false };
-    const initialContent = await callModelWithRetry(
-      runId,
-      input,
-      false,
-      simulateFailures,
-      attemptState,
-    );
-    const tasks = await parseTasksWithRecovery(
-      runId,
-      input,
-      initialContent,
-      simulateFailures,
-      attemptState,
-    );
-
-    const saveStartedAt = Date.now();
-    await writeEvent(runId, "save_tasks", "started", "Saving extracted tasks.");
-    try {
-      await db.transaction(async (tx) => {
-        if (tasks.length) {
-          await tx.insert(tasksTable).values(
-            tasks.map((task) => ({
-              runId,
-              title: task.title,
-              owner: task.owner,
-              dueDate: task.due_date,
-              priority: task.priority,
-              done: false,
-            })),
-          );
-        }
-      });
-      await writeEvent(
-        runId,
-        "save_tasks",
-        "succeeded",
-        `Saved ${tasks.length} task${tasks.length === 1 ? "" : "s"}.`,
-        Date.now() - saveStartedAt,
-      );
-    } catch (cause) {
-      await writeEvent(
-        runId,
-        "save_tasks",
-        "failed",
-        `Could not save tasks: ${shortDetail(cause)}`,
-        Date.now() - saveStartedAt,
-      );
-      throw cause;
-    }
-
-    await finishRun(runId, "succeeded");
-  } catch (cause) {
-    const message = shortDetail(cause);
-    logger.error({ err: cause, runId }, "Task extraction run failed");
-    try {
-      await finishRun(runId, "failed", message);
-    } catch (finishError) {
-      logger.error({ err: finishError, runId }, "Could not mark failed run as terminal");
-    }
-  }
-}
+    });
+  },
+});
 
 router.get("/runs", async (req, res): Promise<void> => {
   const rows = await db
