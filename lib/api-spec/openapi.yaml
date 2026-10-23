@@ -10,6 +10,10 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: runs
+    description: Task extraction runs and their event histories
+  - name: tasks
+    description: Extracted tasks
 paths:
   /healthz:
     get:
@@ -24,6 +28,108 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /runs:
+    get:
+      operationId: listRuns
+      tags: [runs]
+      summary: List extraction runs
+      responses:
+        "200":
+          description: Runs ordered newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RunListItem"
+    post:
+      operationId: createRun
+      tags: [runs]
+      summary: Start a task extraction run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunInput"
+      responses:
+        "202":
+          description: Run accepted or failed input was persisted with its event history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunDetail"
+  /runs/{id}:
+    get:
+      operationId: getRun
+      tags: [runs]
+      summary: Get a run and its extracted tasks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Run with tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunDetail"
+        "404":
+          description: Run not found
+  /runs/{id}/events:
+    get:
+      operationId: getRunEvents
+      tags: [runs]
+      summary: Get the persisted event history for a run
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Run events in recorded order
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RunEvent"
+        "404":
+          description: Run not found
+  /tasks/{id}:
+    patch:
+      operationId: updateTask
+      tags: [tasks]
+      summary: Update task completion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskUpdate"
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          description: Task not found
 components:
   schemas:
     HealthStatus:
@@ -33,4 +139,113 @@ components:
           type: string
       required:
         - status
+    RunStatus:
+      type: string
+      enum: [pending, running, succeeded, failed]
+    TaskPriority:
+      type: string
+      enum: [low, medium, high]
+    RunEventStatus:
+      type: string
+      enum: [started, succeeded, failed, retrying]
+    RunInput:
+      type: object
+      required: [input_text, simulate_failures]
+      properties:
+        input_text:
+          type: string
+        simulate_failures:
+          type: boolean
+    Run:
+      type: object
+      required: [id, input_text, status, started_at, finished_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        input_text:
+          type: string
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: ["string", "null"]
+          format: date-time
+        error:
+          type: ["string", "null"]
+    RunListItem:
+      allOf:
+        - $ref: "#/components/schemas/Run"
+        - type: object
+          required: [task_count]
+          properties:
+            task_count:
+              type: integer
+    RunDetail:
+      allOf:
+        - $ref: "#/components/schemas/Run"
+        - type: object
+          required: [tasks]
+          properties:
+            tasks:
+              type: array
+              items:
+                $ref: "#/components/schemas/Task"
+    RunEvent:
+      type: object
+      required:
+        [id, run_id, sequence, step, status, timestamp, duration_ms, detail, attempt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+        step:
+          type: string
+          enum:
+            [receive_input, create_run, call_model, parse_output, save_tasks, finish_run]
+        status:
+          $ref: "#/components/schemas/RunEventStatus"
+        timestamp:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        detail:
+          type: string
+        attempt:
+          type: integer
+    Task:
+      type: object
+      required: [id, run_id, title, owner, due_date, priority, done]
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        owner:
+          type: string
+        due_date:
+          type: ["string", "null"]
+          description: Calendar date in YYYY-MM-DD format, or null when no due date was stated.
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+        done:
+          type: boolean
+    TaskUpdate:
+      type: object
+      required: [done]
+      properties:
+        done:
+          type: boolean
 
