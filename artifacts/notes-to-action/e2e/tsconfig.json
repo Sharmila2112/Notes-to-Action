@@ -1,0 +1,6 @@
+{
+  "extends": "../tsconfig.json",
+  "include": ["./**/*.ts", "./**/*.tsx"],
+  "exclude": [],
+  "references": [{ "path": "../../../lib/api-client-react" }]
+}
