@@ -113,6 +113,137 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       assert.equal(theirs.next_cursor, null);
     });
 
+    await t.test("large histories keep responses and database work bounded and use seeking indexes", async () => {
+      assert.notEqual(process.env.NODE_ENV, "production", "Scale fixtures must never run in production");
+      const owners = Array.from({ length: 6 }, () => `history-scale-${randomUUID()}`);
+      const fixtureNote = `${"N".repeat(9_000)}${secretTail}`;
+      const runCount = 2_400;
+      const tasksPerRun = 12;
+      const fixtureStartedAt = Date.parse("2026-01-01T00:00:00Z");
+
+      try {
+        const insertedRuns = await db.insert(runsTable).values(Array.from({ length: runCount }, (_, index) => ({
+          ownerUserId: owners[index % owners.length],
+          inputText: fixtureNote,
+          status: "succeeded" as const,
+          startedAt: new Date(fixtureStartedAt + index * 1_000),
+        }))).returning({ id: runsTable.id, ownerUserId: runsTable.ownerUserId });
+
+        const fixtureTasks = insertedRuns.flatMap((run) =>
+          Array.from({ length: tasksPerRun }, (_, index) => ({
+            runId: run.id,
+            title: `Scale fixture task ${index + 1}`,
+            priority: "medium" as const,
+          })),
+        );
+        for (let offset = 0; offset < fixtureTasks.length; offset += 5_000) {
+          await db.insert(tasksTable).values(fixtureTasks.slice(offset, offset + 5_000));
+        }
+
+        const scaleOwner = owners[0];
+        const expectedIds = (await db.select({ id: runsTable.id }).from(runsTable)
+          .where(eq(runsTable.ownerUserId, scaleOwner))
+          .orderBy(desc(runsTable.startedAt), desc(runsTable.id))).map((row) => row.id);
+        assert.equal(expectedIds.length, runCount / owners.length);
+        const deepOffset = 320;
+        const [anchor] = await db.select({
+          id: runsTable.id,
+          cursorAt: sql<string>`to_char(${runsTable.startedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+        }).from(runsTable)
+          .where(eq(runsTable.ownerUserId, scaleOwner))
+          .orderBy(desc(runsTable.startedAt), desc(runsTable.id))
+          .offset(deepOffset)
+          .limit(1);
+        assert.ok(anchor);
+        const cursor = encodeHistoryCursor(anchor.cursorAt, anchor.id);
+
+        const capturedQueries: Array<{ text: string; values: unknown[] }> = [];
+        const hookedPool = pool as unknown as { query: (...args: any[]) => any };
+        const hadOwnQuery = Object.hasOwn(pool, "query");
+        const originalQuery = hookedPool.query;
+        hookedPool.query = (...args: any[]) => {
+          const config = args[0];
+          const text = typeof config === "string" ? config : config.text;
+          const values = Array.isArray(args[1]) ? args[1] : config.values ?? [];
+          capturedQueries.push({ text, values });
+          return originalQuery.apply(pool, args);
+        };
+
+        let responseText = "";
+        try {
+          const response = await request(`?limit=50&cursor=${cursor}`, scaleOwner);
+          assert.equal(response.status, 200);
+          assert.equal(response.headers.get("cache-control"), "private, no-store");
+          responseText = await response.text();
+        } finally {
+          if (hadOwnQuery) hookedPool.query = originalQuery;
+          else delete (hookedPool as unknown as { query?: (...args: any[]) => any }).query;
+        }
+
+        assert.ok(Buffer.byteLength(responseText!, "utf8") < 20_000, "A 50-run page must not return full notes or task records");
+        assert.ok(!responseText!.includes(secretTail), "Long-note fixture suffix must not appear in history responses");
+        const rawPage: unknown = JSON.parse(responseText!);
+        assert.ok(!JSON.stringify(rawPage).includes('"input_text"'));
+        const scalePage = ListRunsResponse.parse(rawPage);
+        assert.equal(scalePage.items.length, 50);
+        assert.deepEqual(scalePage.items.map((row) => row.id), expectedIds.slice(deepOffset + 1, deepOffset + 51));
+        assert.ok(scalePage.items.every((row) => row.task_count === tasksPerRun));
+        assert.ok(scalePage.next_cursor);
+
+        assert.equal(capturedQueries.length, 2, "History listing must issue only the run page query and its page-scoped task count");
+        const [listQuery, taskCountQuery] = capturedQueries;
+        const normalizedListSql = listQuery.text.replaceAll('"', "").toLowerCase();
+        const normalizedTaskSql = taskCountQuery.text.replaceAll('"', "").toLowerCase();
+        assert.match(normalizedListSql, /left\([^)]*input_text[^)]*,\s*200\)/);
+        assert.match(normalizedListSql, /owner_user_id/);
+        assert.match(normalizedListSql, /limit\s+\$\d+/);
+        assert.doesNotMatch(normalizedListSql, /select\s+\*/);
+        assert.ok(listQuery.values.includes(51), "The run query may fetch only one extra row to detect another page");
+        assert.match(normalizedTaskSql, /from\s+tasks/);
+        assert.match(normalizedTaskSql, /run_id\s+in\s*\(/);
+        assert.match(normalizedTaskSql, /count\(\*\)/);
+        assert.match(normalizedTaskSql, /group by\s+tasks?\.?run_id|group by\s+run_id/);
+        assert.doesNotMatch(normalizedTaskSql, /join\s+runs/);
+        assert.equal(taskCountQuery.values.length, 50, "Task counts must be restricted to the visible page IDs");
+
+        await pool.query("ANALYZE runs");
+        await pool.query("ANALYZE tasks");
+        const runPlan = await pool.query(
+          `EXPLAIN (FORMAT JSON)
+           SELECT id FROM runs
+           WHERE owner_user_id = $1
+             AND (started_at, id) < ($2::timestamptz, $3::uuid)
+           ORDER BY started_at DESC, id DESC
+           LIMIT 51`,
+          [scaleOwner, anchor.cursorAt, anchor.id],
+        );
+        const taskPlan = await pool.query(
+          `EXPLAIN (FORMAT JSON)
+           SELECT run_id, count(*) FROM tasks
+           WHERE run_id = ANY($1::uuid[])
+           GROUP BY run_id`,
+          [scalePage.items.map((row) => row.id)],
+        );
+        assert.match(JSON.stringify(runPlan.rows[0]["QUERY PLAN"]), /runs_owner_started_id_idx/);
+        assert.match(JSON.stringify(taskPlan.rows[0]["QUERY PLAN"]), /tasks_run_id_idx/);
+
+        const runIndex = await pool.query(
+          "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = $1 AND indexname = $2",
+          ["runs", "runs_owner_started_id_idx"],
+        );
+        const taskIndex = await pool.query(
+          "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = $1 AND indexname = $2",
+          ["tasks", "tasks_run_id_idx"],
+        );
+        assert.equal(runIndex.rowCount, 1);
+        assert.match(runIndex.rows[0].indexdef, /\(owner_user_id, started_at, id\)/);
+        assert.equal(taskIndex.rowCount, 1);
+        assert.match(taskIndex.rows[0].indexdef, /\(run_id\)/);
+      } finally {
+        await db.delete(runsTable).where(inArray(runsTable.ownerUserId, owners));
+      }
+    });
+
     await t.test("newer inserts do not shift older pages and deleting the cursor anchor does not break pagination", async () => {
       const [newer] = await db.insert(runsTable).values({
         ownerUserId: owner, inputText: notes, status: "pending",
