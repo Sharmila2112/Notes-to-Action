@@ -1,5 +1,6 @@
 import { Router, type IRouter, type RequestHandler } from "express";
-import { and, count, desc, eq, max, inArray } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import {
   CreateRunBody,
   CreateRunResponse,
@@ -18,18 +19,15 @@ import {
   runsTable,
   tasksTable,
   type Run,
-  type RunStatus,
 } from "@workspace/db";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../lib/logger";
 import { requireUser } from "../middlewares/require-user";
-import { transitionRunStatus } from "../lib/run-domain";
-import { createRunService, shortDetail } from "../lib/run-service";
+import { createRunService } from "../lib/run-service";
+import { createRunStore, newLeaseExpiry, renewRunLease } from "../lib/run-store";
 
 const MAX_INPUT_LENGTH = 10_000;
 
-type Step = (typeof runEventsTable.step.enumValues)[number];
-type EventStatus = (typeof runEventsTable.status.enumValues)[number];
 type ApiRunRecord = Pick<
   Run,
   "id" | "inputText" | "status" | "startedAt" | "finishedAt" | "error"
@@ -45,80 +43,6 @@ function toRunApi(run: ApiRunRecord) {
     error: run.error,
   };
 }
-
-async function writeEvent(
-  runId: string,
-  step: Step,
-  status: EventStatus,
-  detail: string,
-  durationMs = 0,
-  attempt = 1,
-): Promise<void> {
-  const [lastEvent] = await db
-    .select({ sequence: max(runEventsTable.sequence) })
-    .from(runEventsTable)
-    .where(eq(runEventsTable.runId, runId));
-
-  await db.insert(runEventsTable).values({
-    runId,
-    sequence: Number(lastEvent?.sequence ?? 0) + 1,
-    step,
-    status,
-    timestamp: new Date(),
-    durationMs: Math.max(0, Math.round(durationMs)),
-    detail: shortDetail(detail),
-    attempt,
-  });
-}
-
-async function updateRunStatus(
-  runId: string,
-  nextStatus: RunStatus,
-  error: string | null,
-): Promise<Run> {
-  const [current] = await db
-    .select()
-    .from(runsTable)
-    .where(eq(runsTable.id, runId))
-    .limit(1);
-  if (!current) throw new Error("Run not found while updating status");
-
-  const status = transitionRunStatus(current.status, nextStatus);
-  const [updated] = await db
-    .update(runsTable)
-    .set({
-      status,
-      error,
-      finishedAt: status === "succeeded" || status === "failed" ? new Date() : null,
-    })
-    .where(and(eq(runsTable.id, runId), eq(runsTable.status, current.status)))
-    .returning();
-  if (!updated) throw new Error("Run status changed before this update completed");
-  return updated;
-}
-
-const { finishRun, processRun } = createRunService({
-  writeEvent,
-  updateRunStatus,
-  createCompletion: (request, options) => openai.chat.completions.create(request, options),
-  reportError: (err, runId, message) => logger.error({ err, runId }, message),
-  saveTasks: async (runId, tasks) => {
-    await db.transaction(async (tx) => {
-      if (tasks.length) {
-        await tx.insert(tasksTable).values(
-          tasks.map((task) => ({
-            runId,
-            title: task.title,
-            owner: task.owner,
-            dueDate: task.due_date,
-            priority: task.priority,
-            done: false,
-          })),
-        );
-      }
-    });
-  },
-});
 
 // Tests supply a trusted identity middleware; production always uses Clerk.
 export function createRunsRouter(authenticate: RequestHandler = requireUser): IRouter {
@@ -161,6 +85,15 @@ router.post("/runs", async (req, res): Promise<void> => {
   const inputText =
     typeof rawRecord.input_text === "string" ? rawRecord.input_text : "";
   const simulateFailures = rawRecord.simulate_failures === true;
+  const executionToken = randomUUID();
+  const store = createRunStore(executionToken);
+  const { writeEvent, updateRunStatus } = store;
+  const { finishRun, processRun } = createRunService({
+    ...store,
+    renewLease: (runId) => renewRunLease(runId, executionToken),
+    createCompletion: (request, options) => openai.chat.completions.create(request, options),
+    reportError: (err, runId, message) => logger.error({ err, runId }, message),
+  });
 
   const [createdRun] = await db
     .insert(runsTable)
@@ -169,6 +102,8 @@ router.post("/runs", async (req, res): Promise<void> => {
       inputText,
       status: "pending",
       simulateFailures,
+      executionToken,
+      leaseExpiresAt: newLeaseExpiry(),
     })
     .returning();
 

@@ -19,7 +19,12 @@ export const runsTable = pgTable("runs", {
   finishedAt: timestamp("finished_at", { withTimezone: true }),
   error: text("error"),
   simulateFailures: boolean("simulate_failures").notNull().default(false),
-}, (table) => [index("runs_owner_user_id_idx").on(table.ownerUserId)]);
+  executionToken: uuid("execution_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+}, (table) => [
+  index("runs_owner_user_id_idx").on(table.ownerUserId),
+  index("runs_status_lease_idx").on(table.status, table.leaseExpiresAt),
+]);
 
 export const insertRunSchema = createInsertSchema(runsTable).omit({
   id: true,

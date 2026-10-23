@@ -1,4 +1,5 @@
 import type { RunEvent } from "@workspace/db";
+import { HEARTBEAT_MS, RunLeaseLostError } from "./run-lease";
 import {
   extractTasksFromLines,
   parseModelTasks,
@@ -33,6 +34,8 @@ export type RunServiceDependencies = {
   random?: () => number;
   sleep?: (ms: number) => Promise<void>;
   timeoutSignal?: (ms: number) => AbortSignal;
+  renewLease?: (runId: string) => Promise<boolean>;
+  heartbeat?: (tick: () => void, intervalMs: number) => () => void;
 };
 
 export function shortDetail(value: unknown): string {
@@ -59,6 +62,16 @@ export function createRunService(deps: RunServiceDependencies) {
   const random = deps.random ?? Math.random;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const timeoutSignal = deps.timeoutSignal ?? ((ms: number) => AbortSignal.timeout(ms));
+  const heartbeat = deps.heartbeat ?? ((tick, intervalMs) => {
+    const timer = setInterval(tick, intervalMs);
+    timer.unref();
+    return () => clearInterval(timer);
+  });
+  const leaseAbort = new AbortController();
+  let leaseLost = false;
+  function assertLease() {
+    if (leaseLost) throw new RunLeaseLostError();
+  }
 
   async function finishRun(
     runId: string,
@@ -94,6 +107,7 @@ export function createRunService(deps: RunServiceDependencies) {
     attemptState: { value: number; simulationChecked: boolean },
   ): Promise<string> {
     for (let localAttempt = 0; localAttempt < 2; localAttempt += 1) {
+      assertLease();
       const attempt = ++attemptState.value;
       const startedAt = now();
       await writeEvent(
@@ -115,7 +129,7 @@ export function createRunService(deps: RunServiceDependencies) {
             response_format: { type: "json_object" },
             messages: [{ role: "user", content: modelPrompt(input, strict) }],
           },
-          { signal: timeoutSignal(20_000) },
+          { signal: AbortSignal.any([timeoutSignal(20_000), leaseAbort.signal]) },
         );
         const content = completion.choices[0]?.message?.content;
         if (!content) throw new Error("Model returned an empty response.");
@@ -125,6 +139,7 @@ export function createRunService(deps: RunServiceDependencies) {
         );
         return content;
       } catch (cause) {
+        if (cause instanceof RunLeaseLostError || leaseLost) throw new RunLeaseLostError();
         const detail = shortDetail(cause);
         await writeEvent(runId, "call_model", "failed", detail, now() - startedAt, attempt);
         if (localAttempt === 1) throw cause;
@@ -187,10 +202,27 @@ export function createRunService(deps: RunServiceDependencies) {
   }
 
   async function processRun(runId: string, input: string, simulateFailures: boolean): Promise<void> {
+    let renewing = false;
+    const renew = async () => {
+      if (!deps.renewLease) return;
+      if (!await deps.renewLease(runId)) throw new RunLeaseLostError();
+    };
+    const stopHeartbeat = deps.renewLease ? heartbeat(() => {
+      if (renewing || leaseLost) return;
+      renewing = true;
+      void renew().catch((cause) => {
+        leaseLost = true;
+        leaseAbort.abort(new RunLeaseLostError());
+        reportError(cause, runId, "Extraction stopped after losing its execution lease");
+      }).finally(() => { renewing = false; });
+    }, HEARTBEAT_MS) : () => {};
     try {
+      await renew();
+      assertLease();
       const attemptState = { value: 0, simulationChecked: false };
       const content = await callModelWithRetry(runId, input, false, simulateFailures, attemptState);
       const tasks = await parseTasksWithRecovery(runId, input, content, simulateFailures, attemptState);
+      assertLease();
       const saveStartedAt = now();
       await writeEvent(runId, "save_tasks", "started", "Saving extracted tasks.");
       try {
@@ -207,6 +239,9 @@ export function createRunService(deps: RunServiceDependencies) {
       }
       await finishRun(runId, "succeeded");
     } catch (cause) {
+      // The recovery transaction owns terminal status after lease loss. Never
+      // retry the provider or write late results over that terminal failure.
+      if (cause instanceof RunLeaseLostError || leaseLost) return;
       const message = shortDetail(cause);
       reportError(cause, runId, "Task extraction run failed");
       try {
@@ -214,6 +249,8 @@ export function createRunService(deps: RunServiceDependencies) {
       } catch (finishError) {
         reportError(finishError, runId, "Could not mark failed run as terminal");
       }
+    } finally {
+      stopHeartbeat();
     }
   }
 
