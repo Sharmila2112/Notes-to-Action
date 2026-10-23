@@ -14,10 +14,13 @@ tags:
     description: Task extraction runs and their event histories
   - name: tasks
     description: Extracted tasks
+security:
+  - clerkSession: []
 paths:
   /healthz:
     get:
       operationId: healthCheck
+      security: []
       tags: [health]
       summary: Health check
       description: Returns server health status
@@ -32,8 +35,10 @@ paths:
     get:
       operationId: listRuns
       tags: [runs]
-      summary: List extraction runs
+      summary: List the signed-in user's extraction runs
       responses:
+        "401":
+          description: Sign-in required
         "200":
           description: Runs ordered newest first
           content:
@@ -46,6 +51,7 @@ paths:
       operationId: createRun
       tags: [runs]
       summary: Start a task extraction run
+      description: Ownership is assigned from the authenticated session, never from request input.
       requestBody:
         required: true
         content:
@@ -53,6 +59,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RunInput"
       responses:
+        "401":
+          description: Sign-in required
         "202":
           description: Run accepted or failed input was persisted with its event history
           content:
@@ -72,6 +80,8 @@ paths:
             type: string
             format: uuid
       responses:
+        "401":
+          description: Sign-in required
         "200":
           description: Run with tasks
           content:
@@ -79,7 +89,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/RunDetail"
         "404":
-          description: Run not found
+          description: Run not found or owned by another user
   /runs/{id}/events:
     get:
       operationId: getRunEvents
@@ -93,6 +103,8 @@ paths:
             type: string
             format: uuid
       responses:
+        "401":
+          description: Sign-in required
         "200":
           description: Run events in recorded order
           content:
@@ -102,7 +114,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/RunEvent"
         "404":
-          description: Run not found
+          description: Run not found or owned by another user
   /tasks/{id}:
     patch:
       operationId: updateTask
@@ -122,6 +134,8 @@ paths:
             schema:
               $ref: "#/components/schemas/TaskUpdate"
       responses:
+        "401":
+          description: Sign-in required
         "200":
           description: Updated task
           content:
@@ -129,8 +143,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/Task"
         "404":
-          description: Task not found
+          description: Task not found or its run is owned by another user
 components:
+  securitySchemes:
+    clerkSession:
+      type: apiKey
+      in: cookie
+      name: __session
+      description: Replit-managed Clerk session cookie. Runs, tasks, and events are private to the authenticated user.
   schemas:
     HealthStatus:
       type: object

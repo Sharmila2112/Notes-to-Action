@@ -1,1 +1,2 @@
 - [Offline AI tests](offline-ai-tests.md) — automated extraction recovery tests must not spend model credits.
+- [Legacy note ownership](legacy-note-ownership.md) — never assign formerly shared meeting notes to new accounts without verified ownership.

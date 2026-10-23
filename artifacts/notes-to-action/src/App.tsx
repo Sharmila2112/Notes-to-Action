@@ -1,5 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
+import { UserButton } from '@clerk/react';
+import { AuthProvider } from '@/components/auth';
 import { AlertCircle, ArrowRight, Check, Clock3, FileText, History, LoaderCircle, Play, RotateCcw, Sparkles } from 'lucide-react';
 import { Link, Route, Switch, useLocation, useParams, Router as WouterRouter } from 'wouter';
 import {
@@ -18,7 +20,6 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 
-const queryClient = new QueryClient();
 const steps: RunEventStep[] = ['receive_input', 'create_run', 'call_model', 'parse_output', 'save_tasks', 'finish_run'];
 const stepTitles: Record<RunEventStep, string> = {
   receive_input: 'Receive input',
@@ -47,6 +48,7 @@ function Shell({ children }: { children: ReactNode }) {
         <Link href="/" className={`nav-link ${location === '/' ? 'active' : ''}`} data-testid="link-new-extraction">New extraction</Link>
         <Link href="/runs" className={`nav-link ${location.startsWith('/runs') ? 'active' : ''}`} data-testid="link-run-history">Run history</Link>
         <span className="nav-note">A clearer next step</span>
+        <UserButton />
       </nav>
     </header>
     {children}
@@ -259,7 +261,7 @@ function Home() {
       <div className="panel-heading"><div><div className="small-label">Start with the raw version</div><h2 className="section-title" style={{ marginTop: 5 }}>Meeting notes</h2></div><span className="subtle">{text.length} characters</span></div>
       <label htmlFor="meeting-notes" className="sr-only">Paste untidy meeting notes</label>
       <textarea id="meeting-notes" className="notes-input" value={text} onChange={(event) => setText(event.target.value)} placeholder={'Paste your meeting notes here…\n\n“Need to get the launch brief over to Mira by Thursday. I’ll check with finance about the revised numbers. Maybe regroup next week once the vendor sends the updated timeline.”'} data-testid="input-meeting-notes" />
-      <p className="sharing-note">Run history is shared across visitors. Avoid pasting confidential notes.</p>
+      <p className="sharing-note">Your run history is private to your account. Notes are sent to the AI service to extract action items.</p>
       <div className="form-footer">
         <label className="checkline"><input type="checkbox" checked={simulateFailures} onChange={(event) => setSimulateFailures(event.target.checked)} data-testid="checkbox-simulate-failures" /> Simulate a transient failure <span className="subtle">(demo mode)</span></label>
         <button className="button-primary" type="submit" disabled={!text.trim() || create.isPending || activeStatus === 'running' || activeStatus === 'pending'} data-testid="button-extract">
@@ -288,7 +290,7 @@ function RunsPage() {
   const runs = useListRuns({ query: { queryKey: getListRunsQueryKey() } });
   return <main className="main-wrap">
     <div className="intro-row">
-      <div><div className="eyebrow">A record of the work</div><h1 className="page-title">Run history</h1><p className="lede">Every extraction, preserved with its status and task count. Pick up where you left off.</p></div>
+      <div><div className="eyebrow">Your private record</div><h1 className="page-title">Run history</h1><p className="lede">Your extractions, preserved with their status and task count. Only you can access these runs.</p></div>
       <Link href="/" className="button-primary" style={{ textDecoration: 'none' }} data-testid="link-create-extraction"><Sparkles size={15} /> New extraction</Link>
     </div>
     {runs.isLoading ? <div className="panel task-skeleton"><div className="loading-line" /><div className="loading-line" /><div className="loading-line" /></div> :
@@ -347,9 +349,9 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 }
 
 function App() {
-  return <QueryClientProvider client={queryClient}>
-    <TooltipProvider><WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}><Router /></WouterRouter><Toaster /></TooltipProvider>
-  </QueryClientProvider>;
+  return <TooltipProvider><WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+    <AuthProvider><Router /><Toaster /></AuthProvider>
+  </WouterRouter></TooltipProvider>;
 }
 
 export default App;

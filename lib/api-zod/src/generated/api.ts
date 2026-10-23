@@ -18,7 +18,7 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
- * @summary List extraction runs
+ * @summary List the signed-in user's extraction runs
  */
 export const ListRunsResponseItem = zod.object({
   "id": zod.string().uuid(),
@@ -34,6 +34,7 @@ export const ListRunsResponse = zod.array(ListRunsResponseItem)
 
 
 /**
+ * Ownership is assigned from the authenticated session, never from request input.
  * @summary Start a task extraction run
  */
 export const CreateRunBody = zod.object({

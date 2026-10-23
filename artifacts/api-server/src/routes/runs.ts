@@ -1,5 +1,5 @@
-import { Router, type IRouter } from "express";
-import { and, count, desc, eq, max } from "drizzle-orm";
+import { Router, type IRouter, type RequestHandler } from "express";
+import { and, count, desc, eq, max, inArray } from "drizzle-orm";
 import {
   CreateRunBody,
   CreateRunResponse,
@@ -22,10 +22,10 @@ import {
 } from "@workspace/db";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../lib/logger";
+import { requireUser } from "../middlewares/require-user";
 import { transitionRunStatus } from "../lib/run-domain";
 import { createRunService, shortDetail } from "../lib/run-service";
 
-const router: IRouter = Router();
 const MAX_INPUT_LENGTH = 10_000;
 
 type Step = (typeof runEventsTable.step.enumValues)[number];
@@ -120,6 +120,15 @@ const { finishRun, processRun } = createRunService({
   },
 });
 
+// Tests supply a trusted identity middleware; production always uses Clerk.
+export function createRunsRouter(authenticate: RequestHandler = requireUser): IRouter {
+const router: IRouter = Router();
+router.use(authenticate);
+router.use((_req, res, next) => {
+  res.setHeader("Cache-Control", "private, no-store");
+  next();
+});
+
 router.get("/runs", async (req, res): Promise<void> => {
   const rows = await db
     .select({
@@ -133,6 +142,7 @@ router.get("/runs", async (req, res): Promise<void> => {
     })
     .from(runsTable)
     .leftJoin(tasksTable, eq(tasksTable.runId, runsTable.id))
+    .where(eq(runsTable.ownerUserId, res.locals.userId))
     .groupBy(runsTable.id)
     .orderBy(desc(runsTable.startedAt));
   const response = rows.map((row) => ({
@@ -155,6 +165,7 @@ router.post("/runs", async (req, res): Promise<void> => {
   const [createdRun] = await db
     .insert(runsTable)
     .values({
+      ownerUserId: res.locals.userId,
       inputText,
       status: "pending",
       simulateFailures,
@@ -249,7 +260,7 @@ router.get("/runs/:id", async (req, res): Promise<void> => {
   const [run] = await db
     .select()
     .from(runsTable)
-    .where(eq(runsTable.id, params.data.id))
+    .where(and(eq(runsTable.id, params.data.id), eq(runsTable.ownerUserId, res.locals.userId)))
     .limit(1);
   if (!run) {
     res.status(404).json({ error: "Run not found." });
@@ -284,7 +295,7 @@ router.get("/runs/:id/events", async (req, res): Promise<void> => {
   const [run] = await db
     .select({ id: runsTable.id })
     .from(runsTable)
-    .where(eq(runsTable.id, params.data.id))
+    .where(and(eq(runsTable.id, params.data.id), eq(runsTable.ownerUserId, res.locals.userId)))
     .limit(1);
   if (!run) {
     res.status(404).json({ error: "Run not found." });
@@ -325,7 +336,11 @@ router.patch("/tasks/:id", async (req, res): Promise<void> => {
   const [task] = await db
     .update(tasksTable)
     .set({ done: body.data.done })
-    .where(eq(tasksTable.id, params.data.id))
+    .where(and(
+      eq(tasksTable.id, params.data.id),
+      inArray(tasksTable.runId, db.select({ id: runsTable.id }).from(runsTable)
+        .where(eq(runsTable.ownerUserId, res.locals.userId))),
+    ))
     .returning();
   if (!task) {
     res.status(404).json({ error: "Task not found." });
@@ -344,4 +359,7 @@ router.patch("/tasks/:id", async (req, res): Promise<void> => {
   );
 });
 
-export default router;
+return router;
+}
+
+export default createRunsRouter();

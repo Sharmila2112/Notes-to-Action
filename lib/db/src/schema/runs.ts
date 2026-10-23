@@ -1,5 +1,5 @@
 import { createInsertSchema } from "drizzle-zod";
-import { boolean, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { z } from "zod/v4";
 
 export const runStatusEnum = pgEnum("run_status", [
@@ -11,13 +11,15 @@ export const runStatusEnum = pgEnum("run_status", [
 
 export const runsTable = pgTable("runs", {
   id: uuid("id").primaryKey().defaultRandom(),
+  // Null only for legacy shared runs, which are never exposed to visitors.
+  ownerUserId: text("owner_user_id"),
   inputText: text("input_text").notNull(),
   status: runStatusEnum("status").notNull().default("pending"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
   error: text("error"),
   simulateFailures: boolean("simulate_failures").notNull().default(false),
-});
+}, (table) => [index("runs_owner_user_id_idx").on(table.ownerUserId)]);
 
 export const insertRunSchema = createInsertSchema(runsTable).omit({
   id: true,

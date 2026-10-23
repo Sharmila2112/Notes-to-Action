@@ -143,7 +143,7 @@ export const getListRunsUrl = () => {
 }
 
 /**
- * @summary List extraction runs
+ * @summary List the signed-in user's extraction runs
  */
 export const listRuns = async ( options?: Parameters<typeof customFetch>[1]): Promise<RunListItem[]> => {
 
@@ -167,7 +167,7 @@ export const getListRunsQueryKey = () => {
     }
 
 
-export const getListRunsQueryOptions = <TData = Awaited<ReturnType<typeof listRuns>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export const getListRunsQueryOptions = <TData = Awaited<ReturnType<typeof listRuns>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
@@ -186,14 +186,14 @@ const {query: queryOptions, request: requestOptions} = options ?? {};
 }
 
 export type ListRunsQueryResult = NonNullable<Awaited<ReturnType<typeof listRuns>>>
-export type ListRunsQueryError = ErrorType<unknown>
+export type ListRunsQueryError = ErrorType<void>
 
 
 /**
- * @summary List extraction runs
+ * @summary List the signed-in user's extraction runs
  */
 
-export function useListRuns<TData = Awaited<ReturnType<typeof listRuns>>, TError = ErrorType<unknown>>(
+export function useListRuns<TData = Awaited<ReturnType<typeof listRuns>>, TError = ErrorType<void>>(
   options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
@@ -220,6 +220,7 @@ export const getCreateRunUrl = () => {
 }
 
 /**
+ * Ownership is assigned from the authenticated session, never from request input.
  * @summary Start a task extraction run
  */
 export const createRun = async (runInput: RunInput, options?: Parameters<typeof customFetch>[1]): Promise<RunDetail> => {
@@ -253,7 +254,7 @@ return customFetch<RunDetail>(getCreateRunUrl(),
 
 export const getCreateRunMutationKey = () => ['createRun'] as const;
 
-export const getCreateRunMutationOptions = <TError = ErrorType<unknown>,
+export const getCreateRunMutationOptions = <TError = ErrorType<void>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRun>>, TError,CreateRunMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
 ): UseMutationOptions<Awaited<ReturnType<typeof createRun>>, TError,CreateRunMutationVariables, TContext> => {
 
@@ -282,13 +283,13 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
     export type CreateRunMutationResult = NonNullable<Awaited<ReturnType<typeof createRun>>>
     export type CreateRunMutationBody = BodyType<RunInput>
-    export type CreateRunMutationError = ErrorType<unknown>
+    export type CreateRunMutationError = ErrorType<void>
     export type CreateRunMutationVariables = {data: BodyType<RunInput>}
 
     /**
  * @summary Start a task extraction run
  */
-export const useCreateRun = <TError = ErrorType<unknown>,
+export const useCreateRun = <TError = ErrorType<void>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRun>>, TError,CreateRunMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
  ): UseMutationResult<
         Awaited<ReturnType<typeof createRun>>,
