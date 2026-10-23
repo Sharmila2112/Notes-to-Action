@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Notes to Action"
+description = "Turn meeting notes and rough to-do dumps into a clean, trackable task list. Each extraction is saved with a replayable event trail that explains how the notes became actions."
+version = "1.0.0"
+id = "artifacts/notes-to-action"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23226
+
+[services.development]
+run = "pnpm --filter @workspace/notes-to-action run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/notes-to-action", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/notes-to-action/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23226"
+BASE_PATH = "/"
