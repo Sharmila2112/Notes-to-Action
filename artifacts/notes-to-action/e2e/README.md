@@ -29,3 +29,10 @@ claim to test Clerk's hosted login, cookies, or backend authorization.
 
 Failures save screenshots and traces under the ignored
 `generated-artifacts/browser-results/` directory at the workspace root.
+
+History fixtures return the generated paginated API shape, not full run detail
+arrays. History tests cover ordered page append, loading/disabled controls,
+initial and next-page errors, retry without duplicate rows, empty history,
+opening full note detail, and a 375px layout. Backend pagination tests separately
+verify real owner filtering, limit bounds, timestamp precision, and short
+previews against the development database without making model requests.

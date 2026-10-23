@@ -54,9 +54,26 @@ export interface Run {
   error?: string | null;
 }
 
-export type RunListItem = Run & {
+export interface RunListItem {
+  id: string;
+  /** At most 200 Unicode characters of the source notes, never the complete note payload for long notes. */
+  input_preview: string;
+  status: RunStatus;
+  started_at: string;
+  /** @nullable */
+  finished_at: string | null;
   task_count: number;
-};
+}
+
+export interface RunPage {
+  /** @maxItems 50 */
+  items: RunListItem[];
+  /**
+     * Pass as cursor to fetch older runs; null means no older page remains.
+     * @nullable
+     */
+  next_cursor: string | null;
+}
 
 export interface Task {
   id: string;
@@ -103,4 +120,19 @@ export interface RunEvent {
 export interface TaskUpdate {
   done: boolean;
 }
+
+export type ListRunsParams = {
+/**
+ * @minimum 1
+ * @maximum 50
+ */
+limit?: number;
+/**
+ * Opaque next_cursor from the preceding page.
+ * @minLength 1
+ * @maxLength 256
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+cursor?: string;
+};
 

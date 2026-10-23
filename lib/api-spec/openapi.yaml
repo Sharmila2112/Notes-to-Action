@@ -36,17 +36,34 @@ paths:
       operationId: listRuns
       tags: [runs]
       summary: List the signed-in user's extraction runs
+      description: Bounded newest-first history with short note previews. Follow next_cursor for older records; full notes remain available only on the owner-scoped run detail endpoint.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: cursor
+          in: query
+          description: Opaque next_cursor from the preceding page.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+            pattern: "^[A-Za-z0-9_-]+$"
       responses:
+        "400":
+          description: Invalid pagination limit or cursor
         "401":
           description: Sign-in required
         "200":
-          description: Runs ordered newest first
+          description: One page ordered by start time and ID descending
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/RunListItem"
+                $ref: "#/components/schemas/RunPage"
     post:
       operationId: createRun
       tags: [runs]
@@ -196,13 +213,37 @@ components:
         error:
           type: ["string", "null"]
     RunListItem:
-      allOf:
-        - $ref: "#/components/schemas/Run"
-        - type: object
-          required: [task_count]
-          properties:
-            task_count:
-              type: integer
+      type: object
+      required: [id, input_preview, status, started_at, finished_at, task_count]
+      properties:
+        id:
+          type: string
+          format: uuid
+        input_preview:
+          type: string
+          description: At most 200 Unicode characters of the source notes, never the complete note payload for long notes.
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: ["string", "null"]
+          format: date-time
+        task_count:
+          type: integer
+    RunPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/RunListItem"
+        next_cursor:
+          type: ["string", "null"]
+          description: Pass as cursor to fetch older runs; null means no older page remains.
     RunDetail:
       allOf:
         - $ref: "#/components/schemas/Run"

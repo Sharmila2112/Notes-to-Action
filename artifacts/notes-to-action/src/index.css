@@ -82,6 +82,7 @@ button { cursor:pointer; }
 .notes-input:focus {border-color:#779386;box-shadow:0 0 0 3px rgba(82,121,101,.11)}
 .notes-input::placeholder {color:#9c9e96}
 .sharing-note {margin:8px 0 0;color:#8b8170;font-size:11px;line-height:1.5}
+.history-pagination {display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:18px}
 .form-footer { display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:15px; }
 .checkline {display:flex;align-items:center;gap:9px;color:#737a73;font-size:12px;cursor:pointer;user-select:none}
 .checkline input {accent-color:#315e4f;width:15px;height:15px}

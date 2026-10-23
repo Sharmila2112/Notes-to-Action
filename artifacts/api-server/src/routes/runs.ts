@@ -1,6 +1,6 @@
 import { Router, type IRouter, type RequestHandler } from "express";
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   CreateRunBody,
   CreateRunResponse,
@@ -8,6 +8,7 @@ import {
   GetRunEventsResponse,
   GetRunParams,
   GetRunResponse,
+  ListRunsQueryParams,
   ListRunsResponse,
   UpdateTaskBody,
   UpdateTaskParams,
@@ -25,6 +26,7 @@ import { logger } from "../lib/logger";
 import { requireUser } from "../middlewares/require-user";
 import { createRunService } from "../lib/run-service";
 import { createRunStore, newLeaseExpiry, renewRunLease } from "../lib/run-store";
+import { decodeHistoryCursor, encodeHistoryCursor } from "../lib/run-history-cursor";
 
 const MAX_INPUT_LENGTH = 10_000;
 
@@ -54,26 +56,62 @@ router.use((_req, res, next) => {
 });
 
 router.get("/runs", async (req, res): Promise<void> => {
+  if (
+    (req.query.limit !== undefined && typeof req.query.limit !== "string") ||
+    (req.query.cursor !== undefined && typeof req.query.cursor !== "string")
+  ) {
+    res.status(400).json({ error: "Invalid history pagination." });
+    return;
+  }
+  const query = ListRunsQueryParams.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: "Invalid history pagination." });
+    return;
+  }
+  let cursor: ReturnType<typeof decodeHistoryCursor> | undefined;
+  try {
+    if (query.data.cursor) cursor = decodeHistoryCursor(query.data.cursor);
+  } catch {
+    res.status(400).json({ error: "Invalid history cursor. Refresh your history and try again." });
+    return;
+  }
+  const limit = query.data.limit ?? 20;
   const rows = await db
     .select({
       id: runsTable.id,
-      inputText: runsTable.inputText,
+      inputPreview: sql<string>`left(${runsTable.inputText}, 200)`,
       status: runsTable.status,
       startedAt: runsTable.startedAt,
       finishedAt: runsTable.finishedAt,
-      error: runsTable.error,
-      taskCount: count(tasksTable.id),
+      // JS Date loses microseconds. Keep the exact DB timestamp for the cursor.
+      cursorAt: sql<string>`to_char(${runsTable.startedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
     })
     .from(runsTable)
-    .leftJoin(tasksTable, eq(tasksTable.runId, runsTable.id))
-    .where(eq(runsTable.ownerUserId, res.locals.userId))
-    .groupBy(runsTable.id)
-    .orderBy(desc(runsTable.startedAt));
-  const response = rows.map((row) => ({
-    ...toRunApi(row),
-    task_count: row.taskCount,
+    .where(and(
+      eq(runsTable.ownerUserId, res.locals.userId),
+      cursor ? sql`(${runsTable.startedAt}, ${runsTable.id}) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : undefined,
+    ))
+    .orderBy(desc(runsTable.startedAt), desc(runsTable.id))
+    .limit(limit + 1);
+  const visible = rows.slice(0, limit);
+  // Count tasks only for the bounded, owner-scoped page, not the entire history.
+  const counts = visible.length ? await db
+    .select({ runId: tasksTable.runId, taskCount: count() })
+    .from(tasksTable).where(inArray(tasksTable.runId, visible.map((row) => row.id)))
+    .groupBy(tasksTable.runId) : [];
+  const countById = new Map(counts.map((row) => [row.runId, row.taskCount]));
+  const last = visible.at(-1);
+  res.json(ListRunsResponse.parse({
+    items: visible.map((row) => ({
+      id: row.id,
+      input_preview: row.inputPreview,
+      status: row.status,
+      started_at: row.startedAt.toISOString(),
+      finished_at: row.finishedAt?.toISOString() ?? null,
+      task_count: countById.get(row.id) ?? 0,
+    })),
+    next_cursor: rows.length > limit && last ? encodeHistoryCursor(last.cursorAt, last.id) : null,
   }));
-  res.json(ListRunsResponse.parse(response));
 });
 
 router.post("/runs", async (req, res): Promise<void> => {

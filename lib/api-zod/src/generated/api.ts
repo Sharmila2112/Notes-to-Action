@@ -18,19 +18,38 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
+ * Bounded newest-first history with short note previews. Follow next_cursor for older records; full notes remain available only on the owner-scoped run detail endpoint.
  * @summary List the signed-in user's extraction runs
  */
-export const ListRunsResponseItem = zod.object({
+export const listRunsQueryLimitDefault = 20;
+export const listRunsQueryLimitMax = 50;
+
+export const listRunsQueryCursorMax = 256;
+
+
+export const listRunsQueryCursorRegExp = new RegExp('^[A-Za-z0-9_-]+$');
+
+
+export const ListRunsQueryParams = zod.object({
+  "limit": zod.coerce.number().int().min(1).max(listRunsQueryLimitMax).default(listRunsQueryLimitDefault),
+  "cursor": zod.coerce.string().min(1).max(listRunsQueryCursorMax).regex(listRunsQueryCursorRegExp).optional().describe('Opaque next_cursor from the preceding page.')
+})
+
+export const listRunsResponseItemsMax = 50;
+
+
+
+export const ListRunsResponse = zod.object({
+  "items": zod.array(zod.object({
   "id": zod.string().uuid(),
-  "input_text": zod.string(),
+  "input_preview": zod.string().describe('At most 200 Unicode characters of the source notes, never the complete note payload for long notes.'),
   "status": zod.enum(['pending', 'running', 'succeeded', 'failed']),
   "started_at": zod.coerce.date(),
   "finished_at": zod.coerce.date().nullable(),
-  "error": zod.string().nullish()
-}).and(zod.object({
   "task_count": zod.number().int()
-}))
-export const ListRunsResponse = zod.array(ListRunsResponseItem)
+})).max(listRunsResponseItemsMax),
+  "next_cursor": zod.string().nullable().describe('Pass as cursor to fetch older runs; null means no older page remains.')
+})
 
 
 /**

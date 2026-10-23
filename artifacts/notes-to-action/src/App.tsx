@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { UserButton } from '@clerk/react';
 import { AuthProvider } from '@/components/auth';
 import { AlertCircle, ArrowRight, Check, Clock3, FileText, History, LoaderCircle, Play, RotateCcw, Sparkles } from 'lucide-react';
@@ -8,10 +8,10 @@ import {
   getGetRunEventsQueryKey,
   getGetRunQueryKey,
   getListRunsQueryKey,
+  listRuns,
   useCreateRun,
   useGetRun,
   useGetRunEvents,
-  useListRuns,
   useUpdateTask,
 } from '@workspace/api-client-react';
 import type { RunDetail, RunEvent, RunEventStep, RunStatus, Task } from '@workspace/api-client-react';
@@ -240,7 +240,6 @@ function Home() {
   const [activeStatus, setActiveStatus] = useState<RunStatus | undefined>();
   const create = useCreateRun();
   const client = useQueryClient();
-  const list = useListRuns({ query: { queryKey: getListRunsQueryKey() } });
   const submit = (inputText: string) => {
     if (!inputText.trim() || create.isPending || activeStatus === 'pending' || activeStatus === 'running') return;
     create.mutate({ data: { input_text: inputText, simulate_failures: simulateFailures } }, {
@@ -287,23 +286,42 @@ function Home() {
 }
 
 function RunsPage() {
-  const runs = useListRuns({ query: { queryKey: getListRunsQueryKey() } });
+  const runs = useInfiniteQuery({
+    queryKey: [...getListRunsQueryKey(), 'infinite', { limit: 20 }],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) => listRuns({ limit: 20, ...(pageParam ? { cursor: pageParam } : {}) }, { signal }),
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+    retry: false,
+  });
+  const items = runs.data?.pages.flatMap((page) => page.items) ?? [];
   return <main className="main-wrap">
     <div className="intro-row">
       <div><div className="eyebrow">Your private record</div><h1 className="page-title">Run history</h1><p className="lede">Your extractions, preserved with their status and task count. Only you can access these runs.</p></div>
       <Link href="/" className="button-primary" style={{ textDecoration: 'none' }} data-testid="link-create-extraction"><Sparkles size={15} /> New extraction</Link>
     </div>
-    {runs.isLoading ? <div className="panel task-skeleton"><div className="loading-line" /><div className="loading-line" /><div className="loading-line" /></div> :
-      runs.isError ? <div className="error-card" role="alert"><div className="error-title"><AlertCircle size={16} />History could not load</div><button type="button" className="button-secondary" onClick={() => runs.refetch()} data-testid="button-retry-history"><RotateCcw size={14} /> Try again</button></div> :
-        runs.data?.length ? <section className="panel run-list" aria-label="Past extraction runs">
+    {runs.isPending ? <div className="panel task-skeleton" role="status" aria-label="Loading run history"><div className="loading-line" /><div className="loading-line" /><div className="loading-line" /></div> :
+      !runs.data && runs.isError ? <div className="error-card" role="alert"><div className="error-title"><AlertCircle size={16} />History could not load</div><button type="button" className="button-secondary" onClick={() => runs.refetch()} data-testid="button-retry-history"><RotateCcw size={14} /> Try again</button></div> :
+        items.length ? <section className="panel run-list" aria-label="Past extraction runs" aria-busy={runs.isFetching}>
           <div className="list-header"><span>Note preview</span><span>Status</span><span>Tasks</span><span>Started</span></div>
-          {runs.data.map((run) => <Link href={`/runs/${run.id}`} className="run-row" key={run.id} data-testid={`link-run-${run.id}`}>
-            <span className="run-preview">{run.input_text.replace(/\s+/g, ' ').trim() || 'Untitled notes'}</span>
+          {items.map((run) => <Link href={`/runs/${run.id}`} className="run-row" key={run.id} data-testid={`link-run-${run.id}`}>
+            <span className="run-preview">{run.input_preview.replace(/\s+/g, ' ').trim() || 'Untitled notes'}</span>
             <StatusPill status={run.status} />
             <span className="run-count">{run.task_count} {run.task_count === 1 ? 'task' : 'tasks'}</span>
             <span className="run-date">{formatDate(run.started_at)}</span>
           </Link>)}
         </section> : <section className="panel history-empty"><History size={20} color="#8d9b8f" /><strong>No runs yet</strong><span className="subtle">Your first extraction will be saved here.</span><div><Link href="/" className="button-secondary" style={{ textDecoration: 'none', marginTop: 16 }} data-testid="link-first-run"><Sparkles size={14} /> Start an extraction</Link></div></section>}
+    {runs.isFetchNextPageError && <div className="error-card" role="alert" style={{ marginTop: 16 }}>More runs could not load. Your loaded runs are still here. Try again below.</div>}
+    {runs.isRefetchError && !runs.isFetchNextPageError && runs.data && <div className="error-card" role="alert" style={{ marginTop: 16 }}>
+      History could not refresh. Showing previously loaded runs.{' '}
+      <button type="button" className="button-secondary" onClick={() => runs.refetch()} disabled={runs.isFetching}>Retry refresh</button>
+    </div>}
+    {items.length > 0 && <div className="history-pagination">
+      <span className="subtle" role="status" data-testid="history-page-status">{items.length} runs loaded{!runs.hasNextPage ? ' · All runs loaded' : ''}</span>
+      {runs.hasNextPage && <button type="button" className="button-secondary" onClick={() => runs.fetchNextPage()} disabled={runs.isFetching} data-testid="button-load-more">
+        {runs.isFetchingNextPage ? <LoaderCircle size={14} className="spin" /> : <History size={14} />}
+        {runs.isFetchingNextPage ? 'Loading more…' : runs.isFetchNextPageError ? 'Try again' : 'Load more'}
+      </button>}
+    </div>}
   </main>;
 }
 

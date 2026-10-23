@@ -41,6 +41,10 @@ export class ApiFixture {
   eventReads = new Map<string, number>();
   unexpected: string[] = [];
   rejectCreate = false;
+  historyReads: { cursor: string | null; limit: number }[] = [];
+  rejectHistory = new Set<string>();
+  private releaseHistoryPage?: () => void;
+  private historyGate: Promise<void> = Promise.resolve();
   private releaseCreate?: () => void;
   private createGate: Promise<void> = Promise.resolve();
 
@@ -48,6 +52,10 @@ export class ApiFixture {
     this.createGate = new Promise<void>((resolve) => { this.releaseCreate = resolve; });
   }
   release() { this.releaseCreate?.(); }
+  holdHistoryPage() {
+    this.historyGate = new Promise<void>((resolve) => { this.releaseHistoryPage = resolve; });
+  }
+  releaseHistory() { this.releaseHistoryPage?.(); }
   seed(detail: RunDetail, events: RunEvent[] = []) {
     this.runs.set(detail.id, detail);
     this.events.set(detail.id, events);
@@ -73,7 +81,23 @@ export class ApiFixture {
       const path = url.pathname;
       const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
       if (path === '/api/runs' && method === 'GET') {
-        return json([...this.runs.values()].map(({ tasks, ...detail }) => ({ ...detail, task_count: tasks.length })));
+        const cursor = url.searchParams.get('cursor');
+        const limit = Number(url.searchParams.get('limit') ?? 20);
+        this.historyReads.push({ cursor, limit });
+        if (cursor) await this.historyGate;
+        if (this.rejectHistory.has(cursor ?? 'first')) return json({ error: 'Fixture history unavailable' }, 503);
+        const ordered = [...this.runs.values()].sort((a, b) =>
+          b.started_at.localeCompare(a.started_at) || b.id.localeCompare(a.id));
+        const start = cursor ? ordered.findIndex((item) => item.id === cursor) + 1 : 0;
+        const items = ordered.slice(start, start + limit);
+        return json({
+          items: items.map((detail) => ({
+            id: detail.id, input_preview: Array.from(detail.input_text).slice(0, 200).join(''),
+            status: detail.status, started_at: detail.started_at,
+            finished_at: detail.finished_at, task_count: detail.tasks.length,
+          })),
+          next_cursor: ordered.length > start + limit ? items.at(-1)!.id : null,
+        });
       }
       if (path === '/api/runs' && method === 'POST') {
         const input = request.postDataJSON() as RunInput;
@@ -121,6 +145,7 @@ export const test = base.extend<{ api: ApiFixture }>({
     await api.install(page);
     await use(api);
     api.release();
+    api.releaseHistory();
     expect(api.unexpected, 'All API calls must match deterministic fixtures').toEqual([]);
   },
 });

@@ -27,6 +27,11 @@ The browser sign-in, private-run detail, and sign-out flow were verified in the 
 
 ## Run steps
 
+Run history loads 20 short previews at a time using **Load more**. Loaded rows
+stay visible if a later page fails, with a working retry. Full original notes
+are fetched only when opening a run. Lists stay newest-first with stable
+cursor pagination; empty histories show the starting action.
+
 Each extraction records start and finish events for these steps:
 
 1. `receive_input` — validate that notes are present and no longer than 10,000 characters.

@@ -1,5 +1,5 @@
 import { createInsertSchema } from "drizzle-zod";
-import { date, pgEnum, pgTable, text, uuid, boolean } from "drizzle-orm/pg-core";
+import { date, index, pgEnum, pgTable, text, uuid, boolean } from "drizzle-orm/pg-core";
 import { z } from "zod/v4";
 import { runsTable } from "./runs";
 
@@ -15,7 +15,9 @@ export const tasksTable = pgTable("tasks", {
   dueDate: date("due_date", { mode: "string" }),
   priority: taskPriorityEnum("priority").notNull().default("medium"),
   done: boolean("done").notNull().default(false),
-});
+}, (table) => [
+  index("tasks_run_id_idx").on(table.runId),
+]);
 
 export const insertTaskSchema = createInsertSchema(tasksTable).omit({ id: true });
 export type InsertTask = z.infer<typeof insertTaskSchema>;

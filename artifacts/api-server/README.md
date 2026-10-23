@@ -1,5 +1,30 @@
 # API operations
 
+## Bounded private history
+
+`GET /api/runs?limit=20&cursor=...` returns
+`{ "items": [...], "next_cursor": "..." }`, not an array. The default page size
+is 20; accepted limits are integers from 1 to 50. Omit `cursor` for the newest
+page. Pass the returned opaque `next_cursor` unchanged for older records;
+`null` means the end of history. Malformed pagination receives a 400 response.
+
+List items contain only ID, `input_preview` (at most 200 Unicode characters),
+status, start/finish timestamps, and task count. Full notes and detailed errors
+remain on the owner-scoped detail endpoint rather than traveling with every
+history page. No global total count is queried.
+
+Ordering is `(started_at DESC, id DESC)`. Cursors preserve PostgreSQL timestamp
+microseconds, so ties and sub-millisecond timestamps do not drop or duplicate
+records. Newer insertions do not shift older pages, and deleting the cursor
+anchor does not invalidate its position. Cursors are pagination hints, not
+access tokens: every page independently enforces the authenticated owner.
+Private responses remain `private, no-store`.
+
+The owner/start/ID index supports seeking to the next page. Task counts use
+only IDs in the visible page and the task/run index, avoiding a full-history
+join. Apply the development schema with the usual DB push after these index
+changes; the existing post-merge script does this.
+
 ## Extraction recovery visibility
 
 Recovery checks run on startup and every 15 seconds. They mark abandoned

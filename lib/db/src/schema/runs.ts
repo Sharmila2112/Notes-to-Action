@@ -23,6 +23,7 @@ export const runsTable = pgTable("runs", {
   leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
 }, (table) => [
   index("runs_owner_user_id_idx").on(table.ownerUserId),
+  index("runs_owner_started_id_idx").on(table.ownerUserId, table.startedAt, table.id),
   index("runs_status_lease_idx").on(table.status, table.leaseExpiresAt),
 ]);
 

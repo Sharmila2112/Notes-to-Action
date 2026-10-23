@@ -5,8 +5,15 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { Run } from './run';
+import type { RunStatus } from './runStatus';
 
-export type RunListItem = Run & {
+export interface RunListItem {
+  id: string;
+  /** At most 200 Unicode characters of the source notes, never the complete note payload for long notes. */
+  input_preview: string;
+  status: RunStatus;
+  started_at: Date;
+  /** @nullable */
+  finished_at: Date | null;
   task_count: number;
-};
+}

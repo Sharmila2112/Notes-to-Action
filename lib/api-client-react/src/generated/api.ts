@@ -21,10 +21,11 @@ import type {
 
 import type {
   HealthStatus,
+  ListRunsParams,
   RunDetail,
   RunEvent,
   RunInput,
-  RunListItem,
+  RunPage,
   Task,
   TaskUpdate
 } from './api.schemas';
@@ -134,20 +135,28 @@ export function useHealthCheck<TData = Awaited<ReturnType<typeof healthCheck>>, 
 
 
 
-export const getListRunsUrl = () => {
+export const getListRunsUrl = (params?: ListRunsParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/runs`
+  return stringifiedParams.length > 0 ? `/api/runs?${stringifiedParams}` : `/api/runs`
 }
 
 /**
+ * Bounded newest-first history with short note previews. Follow next_cursor for older records; full notes remain available only on the owner-scoped run detail endpoint.
  * @summary List the signed-in user's extraction runs
  */
-export const listRuns = async ( options?: Parameters<typeof customFetch>[1]): Promise<RunListItem[]> => {
+export const listRuns = async (params?: ListRunsParams, options?: Parameters<typeof customFetch>[1]): Promise<RunPage> => {
 
-  return customFetch<RunListItem[]>(getListRunsUrl(),
+  return customFetch<RunPage>(getListRunsUrl(params),
   {
     ...options,
     method: 'GET'
@@ -160,23 +169,23 @@ export const listRuns = async ( options?: Parameters<typeof customFetch>[1]): Pr
 
 
 
-export const getListRunsQueryKey = () => {
+export const getListRunsQueryKey = (params?: ListRunsParams,) => {
     return [
-    `/api/runs`
+    `/api/runs`, ...(params ? [params] : [])
     ] as const;
     }
 
 
-export const getListRunsQueryOptions = <TData = Awaited<ReturnType<typeof listRuns>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export const getListRunsQueryOptions = <TData = Awaited<ReturnType<typeof listRuns>>, TError = ErrorType<void>>(params?: ListRunsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getListRunsQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getListRunsQueryKey(params);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRuns>>> = ({ signal }) => listRuns({ signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRuns>>> = ({ signal }) => listRuns(params, { signal, ...requestOptions });
 
 
 
@@ -194,11 +203,11 @@ export type ListRunsQueryError = ErrorType<void>
  */
 
 export function useListRuns<TData = Awaited<ReturnType<typeof listRuns>>, TError = ErrorType<void>>(
-  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+ params?: ListRunsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
-  const queryOptions = getListRunsQueryOptions(options)
+  const queryOptions = getListRunsQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

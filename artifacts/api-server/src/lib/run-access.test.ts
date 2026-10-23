@@ -72,8 +72,9 @@ test("run and task access is isolated by authenticated owner", async () => {
     for (const [user, ownRun, otherRun] of [[userA, runA, runB], [userB, runB, runA]]) {
       const listResponse = await request("/runs", user);
       assert.equal(listResponse.headers.get("cache-control"), "private, no-store");
-      const list = await listResponse.json() as { id: string }[];
-      assert.deepEqual(list.map((run) => run.id), [ownRun]);
+      const list = await listResponse.json() as { items: { id: string }[]; next_cursor: string | null };
+      assert.deepEqual(list.items.map((run) => run.id), [ownRun]);
+      assert.equal(list.next_cursor, null);
       assert.equal((await request(`/runs/${ownRun}`, user)).status, 200);
       const events = await request(`/runs/${ownRun}/events`, user);
       assert.equal(events.status, 200);
