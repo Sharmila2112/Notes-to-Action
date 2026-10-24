@@ -18,5 +18,6 @@ export * from './runListItem';
 export * from './runPage';
 export * from './runStatus';
 export * from './task';
+export * from './taskPage';
 export * from './taskPriority';
 export * from './taskUpdate';

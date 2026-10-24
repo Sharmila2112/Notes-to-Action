@@ -89,9 +89,30 @@ export interface Task {
   done: boolean;
 }
 
-export type RunDetail = Run & {
+export type RunDetail = Run & ({
+  /** @maxItems 100 */
   tasks: Task[];
-};
+  /**
+     * Total tasks in the run, including tasks on subsequent pages.
+     * @minimum 0
+     */
+  task_count?: number;
+  /**
+     * ID of the last task in the initial page, or null when the complete task list is included.
+     * @nullable
+     */
+  next_tasks_cursor?: string | null;
+});
+
+export interface TaskPage {
+  /** @maxItems 100 */
+  items: Task[];
+  /**
+     * ID of the last task in this page, or null when no further tasks remain.
+     * @nullable
+     */
+  next_cursor: string | null;
+}
 
 export type RunEventStep = typeof RunEventStep[keyof typeof RunEventStep];
 

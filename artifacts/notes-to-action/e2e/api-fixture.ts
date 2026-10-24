@@ -39,6 +39,7 @@ export class ApiFixture {
   patches: { id: string; data: unknown }[] = [];
   detailReads = new Map<string, number>();
   eventReads = new Map<string, number>();
+  taskPageReads: { runId: string; cursor: string }[] = [];
   unexpected: string[] = [];
   rejectCreate = false;
   historyReads: { cursor: string | null; limit: number }[] = [];
@@ -112,7 +113,30 @@ export class ApiFixture {
       if (detailMatch && method === 'GET' && this.runs.has(detailMatch[1])) {
         const id = detailMatch[1];
         this.detailReads.set(id, (this.detailReads.get(id) ?? 0) + 1);
-        return json(this.runs.get(id));
+        const detail = this.runs.get(id)!;
+        const sortedTasks = [...detail.tasks].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+        const tasks = sortedTasks.slice(0, 100);
+        return json({
+          ...detail,
+          tasks,
+          task_count: sortedTasks.length,
+          next_tasks_cursor: sortedTasks.length > tasks.length ? tasks.at(-1)?.id ?? null : null,
+        });
+      }
+      const taskPageMatch = path.match(/^\/api\/runs\/([^/]+)\/tasks\/([^/]+)$/);
+      if (taskPageMatch && method === 'GET' && this.runs.has(taskPageMatch[1])) {
+        const runId = taskPageMatch[1];
+        const cursor = taskPageMatch[2];
+        this.taskPageReads.push({ runId, cursor });
+        const detail = this.runs.get(runId)!;
+        const sortedTasks = [...detail.tasks].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+        const start = cursor === 'start' ? 0 : sortedTasks.findIndex((item) => item.id === cursor) + 1;
+        if (start <= 0 && cursor !== 'start') return json({ error: 'Invalid task cursor' }, 400);
+        const items = sortedTasks.slice(start, start + 100);
+        return json({
+          items,
+          next_cursor: start + items.length < sortedTasks.length ? items.at(-1)?.id ?? null : null,
+        });
       }
       const eventMatch = path.match(/^\/api\/runs\/([^/]+)\/events$/);
       if (eventMatch && method === 'GET' && this.runs.has(eventMatch[1])) {

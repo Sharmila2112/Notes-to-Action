@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { UserButton } from '@clerk/react';
 import { AuthProvider } from '@/components/auth';
 import { AlertCircle, ArrowRight, Check, Clock3, FileText, History, LoaderCircle, Play, RotateCcw, Sparkles } from 'lucide-react';
@@ -8,13 +8,14 @@ import {
   getGetRunEventsQueryKey,
   getGetRunQueryKey,
   getListRunsQueryKey,
+  getRunTasks,
   listRuns,
   useCreateRun,
   useGetRun,
   useGetRunEvents,
   useUpdateTask,
 } from '@workspace/api-client-react';
-import type { RunDetail, RunEvent, RunEventStep, RunStatus, Task } from '@workspace/api-client-react';
+import type { RunDetail, RunEvent, RunEventStep, RunStatus, Task, TaskPage } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -166,14 +167,50 @@ function Diagram({ events, status }: { events: RunEvent[]; status?: RunStatus })
   </section>;
 }
 
-function TaskList({ tasks, runId }: { tasks: Task[]; runId: string }) {
+function TaskList({
+  tasks,
+  runId,
+  taskCount,
+  nextCursor,
+  canLoadMore,
+}: {
+  tasks: Task[];
+  runId: string;
+  taskCount: number;
+  nextCursor: string | null;
+  canLoadMore: boolean;
+}) {
   const updateTask = useUpdateTask();
   const client = useQueryClient();
+  const taskPagesQueryKey = [...getGetRunQueryKey(runId), 'task-pages'];
+  const taskPages = useInfiniteQuery({
+    queryKey: taskPagesQueryKey,
+    initialPageParam: nextCursor ?? 'start',
+    queryFn: ({ pageParam, signal }) => getRunTasks(runId, pageParam, { signal }),
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+    enabled: false,
+    retry: false,
+  });
+  const additionalTasks = taskPages.data?.pages.flatMap((page) => page.items) ?? [];
+  const visibleTasks = [...tasks, ...additionalTasks];
+  const hasMoreTasks = canLoadMore && (taskPages.data ? taskPages.hasNextPage : !!nextCursor);
+  const taskCountLabel = visibleTasks.length < taskCount
+    ? `${visibleTasks.length} of ${taskCount} tasks`
+    : `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
   const changeDone = (task: Task, done: boolean) => {
     updateTask.mutate({ id: task.id, data: { done } }, {
       onSuccess: (updated) => {
         client.setQueryData<RunDetail>(getGetRunQueryKey(runId), (old) =>
           old ? { ...old, tasks: old.tasks?.map((item) => item.id === updated.id ? updated : item) } : old,
+        );
+        client.setQueryData<InfiniteData<TaskPage, string>>(taskPagesQueryKey, (old) =>
+          old ? {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              items: page.items.map((item) => item.id === updated.id ? updated : item),
+            })),
+          } : old,
         );
       },
     });
@@ -181,20 +218,31 @@ function TaskList({ tasks, runId }: { tasks: Task[]; runId: string }) {
   return <section className="panel tasks-panel" aria-label="Extracted tasks">
     <div className="panel-heading">
       <div><div className="small-label">Your follow-through</div><h2 className="section-title" style={{ marginTop: 5 }}>Action items</h2></div>
-      <span className="task-count">{tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}</span>
+        <span className="task-count" data-testid="text-task-count">{taskCountLabel}</span>
     </div>
-    {tasks.length ? <div className="task-scroll" role="region" aria-label="Action items table, scroll horizontally">
-      <table className="task-table">
-        <thead><tr><th scope="col">Done</th><th scope="col">Action</th><th scope="col">Owner</th><th scope="col">Due</th><th scope="col">Priority</th></tr></thead>
-        <tbody>{tasks.map((task) => <tr key={task.id} data-testid={`row-task-${task.id}`}>
-          <td><input className="task-check" type="checkbox" checked={task.done} onChange={(event) => changeDone(task, event.target.checked)} aria-label={`Mark ${task.title} ${task.done ? 'not done' : 'done'}`} data-testid={`checkbox-task-${task.id}`} /></td>
-          <td className={`task-title ${task.done ? 'done' : ''}`}>{task.title}</td>
-          <td>{task.owner || 'Unassigned'}</td>
-          <td>{task.due_date ? new Date(task.due_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—'}</td>
-          <td><span className={`priority priority-${task.priority}`}>{task.priority}</span></td>
-        </tr>)}</tbody>
-      </table>
-    </div> : <div className="empty-tasks">No action items have been saved for this run. When extraction completes, each task will be listed here.</div>}
+      {visibleTasks.length ? <>
+        <div className="task-scroll" role="region" aria-label="Action items table, scroll horizontally">
+          <table className="task-table">
+            <thead><tr><th scope="col">Done</th><th scope="col">Action</th><th scope="col">Owner</th><th scope="col">Due</th><th scope="col">Priority</th></tr></thead>
+            <tbody>{visibleTasks.map((task) => <tr key={task.id} data-testid={`row-task-${task.id}`}>
+              <td><input className="task-check" type="checkbox" checked={task.done} onChange={(event) => changeDone(task, event.target.checked)} aria-label={`Mark ${task.title} ${task.done ? 'not done' : 'done'}`} data-testid={`checkbox-task-${task.id}`} /></td>
+              <td className={`task-title ${task.done ? 'done' : ''}`}>{task.title}</td>
+              <td>{task.owner || 'Unassigned'}</td>
+              <td>{task.due_date ? new Date(task.due_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—'}</td>
+              <td><span className={`priority priority-${task.priority}`}>{task.priority}</span></td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+        {hasMoreTasks && <div style={{ padding: '14px 20px' }}>
+          <button className="button-secondary" type="button" onClick={() => { void taskPages.fetchNextPage(); }} disabled={taskPages.isFetching} data-testid="button-load-more-tasks">
+            {taskPages.isFetchingNextPage ? <LoaderCircle size={14} className="spin" /> : null}
+            {taskPages.isFetchingNextPage ? 'Loading tasks…' : taskPages.isFetchNextPageError ? 'Try again' : 'Load more tasks'}
+          </button>
+          {taskPages.isFetchNextPageError && <div className="error-message" role="alert" data-testid="text-task-page-error">
+            More tasks could not be loaded. Your current task list is still available.
+          </div>}
+        </div>}
+      </> : <div className="empty-tasks">No action items have been saved for this run. When extraction completes, each task will be listed here.</div>}
   </section>;
 }
 
@@ -227,7 +275,14 @@ function RunPanel({ runId, retry, currentInput, onStatusChange }: { runId: strin
       </div>
     </div>
     <div style={{ marginTop: 18 }}>
-      {detail.status === 'succeeded' || detail.tasks.length > 0 ? <TaskList tasks={detail.tasks} runId={runId} /> :
+      {detail.status === 'succeeded' || detail.tasks.length > 0 ? <TaskList
+        key={runId}
+        tasks={detail.tasks}
+        runId={runId}
+        taskCount={detail.task_count ?? detail.tasks.length}
+        nextCursor={detail.next_tasks_cursor ?? null}
+        canLoadMore={!active}
+      /> :
         <section className="panel tasks-panel"><div className="panel-heading"><div><div className="small-label">Your follow-through</div><h2 className="section-title" style={{ marginTop: 5 }}>Action items</h2></div><span className="task-count">0 tasks</span></div><div className="empty-tasks">Tasks will appear here once the run saves its extraction.</div></section>}
     </div>
   </>;

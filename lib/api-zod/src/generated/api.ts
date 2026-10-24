@@ -61,6 +61,12 @@ export const CreateRunBody = zod.object({
   "simulate_failures": zod.boolean()
 })
 
+export const createRunResponseTwoTasksMax = 100;
+
+export const createRunResponseTwoTaskCountMin = 0;
+
+
+
 export const CreateRunResponse = zod.object({
   "id": zod.string().uuid(),
   "input_text": zod.string(),
@@ -77,7 +83,9 @@ export const CreateRunResponse = zod.object({
   "due_date": zod.string().nullable().describe('Calendar date in YYYY-MM-DD format, or null when no due date was stated.'),
   "priority": zod.enum(['low', 'medium', 'high']),
   "done": zod.boolean()
-}))
+})).max(createRunResponseTwoTasksMax),
+  "task_count": zod.number().int().min(createRunResponseTwoTaskCountMin).optional().describe('Total tasks in the run, including tasks on subsequent pages.'),
+  "next_tasks_cursor": zod.string().uuid().nullish().describe('ID of the last task in the initial page, or null when the complete task list is included.')
 }))
 
 
@@ -87,6 +95,12 @@ export const CreateRunResponse = zod.object({
 export const GetRunParams = zod.object({
   "id": zod.coerce.string().uuid()
 })
+
+export const getRunResponseTwoTasksMax = 100;
+
+export const getRunResponseTwoTaskCountMin = 0;
+
+
 
 export const GetRunResponse = zod.object({
   "id": zod.string().uuid(),
@@ -104,8 +118,43 @@ export const GetRunResponse = zod.object({
   "due_date": zod.string().nullable().describe('Calendar date in YYYY-MM-DD format, or null when no due date was stated.'),
   "priority": zod.enum(['low', 'medium', 'high']),
   "done": zod.boolean()
+})).max(getRunResponseTwoTasksMax),
+  "task_count": zod.number().int().min(getRunResponseTwoTaskCountMin).optional().describe('Total tasks in the run, including tasks on subsequent pages.'),
+  "next_tasks_cursor": zod.string().uuid().nullish().describe('ID of the last task in the initial page, or null when the complete task list is included.')
 }))
-}))
+
+
+/**
+ * Owner-scoped task pagination for large run details. Use the literal start cursor for the first page, then the returned next_cursor.
+ * @summary Get one page of a run's tasks
+ */
+export const getRunTasksPathCursorMax = 36;
+
+
+export const getRunTasksPathCursorRegExp = new RegExp('^(start|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$');
+
+
+export const GetRunTasksParams = zod.object({
+  "id": zod.coerce.string().uuid(),
+  "cursor": zod.coerce.string().max(getRunTasksPathCursorMax).regex(getRunTasksPathCursorRegExp).describe('The literal start for the first page, or a task ID returned as next_cursor.')
+})
+
+export const getRunTasksResponseItemsMax = 100;
+
+
+
+export const GetRunTasksResponse = zod.object({
+  "items": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "run_id": zod.string().uuid(),
+  "title": zod.string(),
+  "owner": zod.string(),
+  "due_date": zod.string().nullable().describe('Calendar date in YYYY-MM-DD format, or null when no due date was stated.'),
+  "priority": zod.enum(['low', 'medium', 'high']),
+  "done": zod.boolean()
+})).max(getRunTasksResponseItemsMax),
+  "next_cursor": zod.string().uuid().nullable().describe('ID of the last task in this page, or null when no further tasks remain.')
+})
 
 
 /**

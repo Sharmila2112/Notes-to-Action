@@ -4,8 +4,8 @@ import { once } from "node:events";
 import { test } from "node:test";
 import express from "express";
 import { clerkMiddleware } from "@clerk/express";
-import { desc, eq, inArray, sql } from "drizzle-orm";
-import { GetRunResponse, ListRunsResponse } from "@workspace/api-zod";
+import { asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { GetRunResponse, GetRunTasksResponse, ListRunsResponse } from "@workspace/api-zod";
 import { db, pool, runsTable, tasksTable } from "@workspace/db";
 import type { RunHistoryMetric } from "./logger";
 import { createRunHistoryMonitor } from "./run-history-monitor";
@@ -113,7 +113,11 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       assert.ok(maximumResponseBytes > defaultResponseBytes);
       assert.equal(historyMetrics[1].has_next_page, true);
       const detail = await fetch(`${base}/runs/${expected[0]}`, { headers: { "x-test-user": owner } });
-      assert.equal(GetRunResponse.parse(await detail.json()).input_text, notes, "Detail still exposes full notes only to their owner");
+      const runDetail = GetRunResponse.parse(await detail.json());
+      assert.equal(runDetail.input_text, notes, "Detail still exposes full notes only to their owner");
+      assert.equal(runDetail.tasks.length, 2, "Normal runs still return all tasks in the initial detail response");
+      assert.equal(runDetail.task_count, 2);
+      assert.equal(runDetail.next_tasks_cursor, null);
     });
 
     await t.test("all pages visit equal timestamps and microsecond boundaries exactly once", async () => {
@@ -309,6 +313,90 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       await db.delete(runsTable).where(eq(runsTable.id, first.items.at(-1)!.id));
       const afterDelete = await page(`?limit=50&cursor=${first.next_cursor}`);
       assert.deepEqual(afterDelete.items.map((row) => row.id), expected.slice(20));
+    });
+
+    await t.test("large run details return every task and keep fixture text out of telemetry", async (context) => {
+      assert.notEqual(process.env.NODE_ENV, "production", "Large detail fixtures must never run in production");
+      const runId = randomUUID();
+      const fixtureNote = "private-detail-note-marker";
+      const fixtureTaskPrefix = "private-detail-task-marker";
+      const taskTotal = 2_000;
+      await db.insert(runsTable).values({
+        id: runId, ownerUserId: owner, inputText: fixtureNote, status: "succeeded",
+      });
+      ids.push(runId);
+
+      for (let offset = 0; offset < taskTotal; offset += 1_000) {
+        const batch = Array.from({ length: Math.min(1_000, taskTotal - offset) }, (_, index) => {
+          const sequence = offset + index;
+          return {
+            runId,
+            title: `${fixtureTaskPrefix}-${String(sequence).padStart(5, "0")}`,
+            owner: `Fixture assignee ${sequence % 20}`,
+            priority: "medium" as const,
+          };
+        });
+        await db.insert(tasksTable).values(batch);
+      }
+
+      const expectedTasks = await db.select({ id: tasksTable.id }).from(tasksTable)
+        .where(eq(tasksTable.runId, runId)).orderBy(asc(tasksTable.title), asc(tasksTable.id));
+      const metricCount = historyMetrics.length;
+      const response = await fetch(`${base}/runs/${runId}`, { headers: { "x-test-user": owner } });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "private, no-store");
+      const responseBody = await response.text();
+      const responseBytes = Buffer.byteLength(responseBody, "utf8");
+      const detail = GetRunResponse.parse(JSON.parse(responseBody));
+
+      assert.equal(detail.tasks.length, 100);
+      assert.equal(detail.task_count, taskTotal);
+      assert.ok(detail.next_tasks_cursor);
+      assert.deepEqual(detail.tasks.map((task) => task.id), expectedTasks.slice(0, 100).map((task) => task.id));
+      assert.ok(responseBytes < 30_000, "The initial detail response should remain bounded to one task page");
+
+      let cursor: string | null = detail.next_tasks_cursor ?? null;
+      let continuationBytes = 0;
+      let largestPageBytes = 0;
+      let pageCount = 0;
+      const allTasks = [...detail.tasks];
+      while (cursor) {
+        const pageResponse = await fetch(`${base}/runs/${runId}/tasks/${cursor}`, {
+          headers: { "x-test-user": owner },
+        });
+        assert.equal(pageResponse.status, 200);
+        assert.equal(pageResponse.headers.get("cache-control"), "private, no-store");
+        const pageBody = await pageResponse.text();
+        const pageBytes = Buffer.byteLength(pageBody, "utf8");
+        continuationBytes += pageBytes;
+        largestPageBytes = Math.max(largestPageBytes, pageBytes);
+        const taskPage = GetRunTasksResponse.parse(JSON.parse(pageBody));
+        assert.ok(taskPage.items.length > 0 && taskPage.items.length <= 100);
+        allTasks.push(...taskPage.items);
+        cursor = taskPage.next_cursor;
+        assert.ok(++pageCount <= 20, "Task pagination must terminate");
+      }
+
+      assert.equal(pageCount, 19);
+      assert.equal(allTasks.length, taskTotal);
+      assert.deepEqual(allTasks.map((task) => task.id), expectedTasks.map((task) => task.id));
+      assert.ok(largestPageBytes < 25_000, "Continuation responses should remain bounded to one task page");
+      context.diagnostic(
+        `Large detail: ${responseBytes} bytes initially; ${pageCount} continuation pages, ${largestPageBytes} bytes maximum each (${responseBytes + continuationBytes} bytes total when fully loaded).`,
+      );
+
+      const [foreignTask] = await db.select({ id: tasksTable.id }).from(tasksTable)
+        .where(eq(tasksTable.runId, expected[0]));
+      assert.ok(foreignTask);
+      assert.equal((await fetch(`${base}/runs/${runId}/tasks/${foreignTask.id}`, {
+        headers: { "x-test-user": owner },
+      })).status, 400, "A cursor from a different run cannot be used to read tasks");
+      assert.equal((await request(`/${runId}/tasks/start`, null)).status, 401);
+      assert.equal((await request(`/${runId}/tasks/start`, otherOwner)).status, 404);
+      assert.equal(historyMetrics.length, metricCount, "Detail fixtures must not create history telemetry events");
+      const serializedMetrics = JSON.stringify(historyMetrics);
+      assert.ok(!serializedMetrics.includes(fixtureNote));
+      assert.ok(!serializedMetrics.includes(fixtureTaskPrefix));
     });
   } finally {
     await db.delete(runsTable).where(inArray(runsTable.id, ids));

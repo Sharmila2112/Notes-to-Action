@@ -27,6 +27,7 @@ import type {
   RunInput,
   RunPage,
   Task,
+  TaskPage,
   TaskUpdate
 } from './api.schemas';
 
@@ -374,6 +375,89 @@ export function useGetRun<TData = Awaited<ReturnType<typeof getRun>>, TError = E
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetRunQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetRunTasksUrl = (id: string,
+    cursor: string,) => {
+
+
+
+
+  return `/api/runs/${id}/tasks/${cursor}`
+}
+
+/**
+ * Owner-scoped task pagination for large run details. Use the literal start cursor for the first page, then the returned next_cursor.
+ * @summary Get one page of a run's tasks
+ */
+export const getRunTasks = async (id: string,
+    cursor: string, options?: Parameters<typeof customFetch>[1]): Promise<TaskPage> => {
+
+  return customFetch<TaskPage>(getGetRunTasksUrl(id,cursor),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetRunTasksQueryKey = (id: string,
+    cursor: string,) => {
+    return [
+    `/api/runs/${id}/tasks/${cursor}`
+    ] as const;
+    }
+
+
+export const getGetRunTasksQueryOptions = <TData = Awaited<ReturnType<typeof getRunTasks>>, TError = ErrorType<void>>(id: string,
+    cursor: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getRunTasks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetRunTasksQueryKey(id,cursor);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getRunTasks>>> = ({ signal }) => getRunTasks(id,cursor, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined && cursor !== null && cursor !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getRunTasks>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetRunTasksQueryResult = NonNullable<Awaited<ReturnType<typeof getRunTasks>>>
+export type GetRunTasksQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get one page of a run's tasks
+ */
+
+export function useGetRunTasks<TData = Awaited<ReturnType<typeof getRunTasks>>, TError = ErrorType<void>>(
+ id: string,
+    cursor: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getRunTasks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetRunTasksQueryOptions(id,cursor,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

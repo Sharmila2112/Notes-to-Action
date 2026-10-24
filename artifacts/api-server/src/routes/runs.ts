@@ -1,7 +1,7 @@
 import { Router, type IRouter, type RequestHandler, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   CreateRunBody,
   CreateRunResponse,
@@ -9,6 +9,8 @@ import {
   GetRunEventsResponse,
   GetRunParams,
   GetRunResponse,
+  GetRunTasksParams,
+  GetRunTasksResponse,
   ListRunsQueryParams,
   ListRunsResponse,
   UpdateTaskBody,
@@ -31,6 +33,7 @@ import { createRunStore, newLeaseExpiry, renewRunLease } from "../lib/run-store"
 import { decodeHistoryCursor, encodeHistoryCursor } from "../lib/run-history-cursor";
 
 const MAX_INPUT_LENGTH = 10_000;
+const RUN_DETAIL_TASK_PAGE_SIZE = 100;
 
 type ApiRunRecord = Pick<
   Run,
@@ -300,11 +303,22 @@ router.get("/runs/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Run not found." });
     return;
   }
-  const tasks = await db
+  const taskRows = await db
     .select()
     .from(tasksTable)
     .where(eq(tasksTable.runId, run.id))
-    .orderBy(tasksTable.title);
+    .orderBy(asc(tasksTable.title), asc(tasksTable.id))
+    .limit(RUN_DETAIL_TASK_PAGE_SIZE + 1);
+  const hasMoreTasks = taskRows.length > RUN_DETAIL_TASK_PAGE_SIZE;
+  const tasks = taskRows.slice(0, RUN_DETAIL_TASK_PAGE_SIZE);
+  let taskCount = tasks.length;
+  if (hasMoreTasks) {
+    const [total] = await db
+      .select({ total: count() })
+      .from(tasksTable)
+      .where(eq(tasksTable.runId, run.id));
+    taskCount = total?.total ?? tasks.length;
+  }
   const response = {
     ...toRunApi(run),
     tasks: tasks.map((task) => ({
@@ -316,8 +330,67 @@ router.get("/runs/:id", async (req, res): Promise<void> => {
       priority: task.priority,
       done: task.done,
     })),
+    task_count: taskCount,
+    next_tasks_cursor: hasMoreTasks ? tasks.at(-1)?.id ?? null : null,
   };
   res.json(GetRunResponse.parse(response));
+});
+
+router.get("/runs/:id/tasks/:cursor", async (req, res): Promise<void> => {
+  const params = GetRunTasksParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Invalid task page cursor." });
+    return;
+  }
+  const [run] = await db
+    .select({ id: runsTable.id })
+    .from(runsTable)
+    .where(and(eq(runsTable.id, params.data.id), eq(runsTable.ownerUserId, res.locals.userId)))
+    .limit(1);
+  if (!run) {
+    res.status(404).json({ error: "Run not found." });
+    return;
+  }
+
+  const cursor = params.data.cursor;
+  let afterTask: { id: string; title: string } | undefined;
+  if (cursor !== "start") {
+    [afterTask] = await db
+      .select({ id: tasksTable.id, title: tasksTable.title })
+      .from(tasksTable)
+      .where(and(eq(tasksTable.id, cursor), eq(tasksTable.runId, run.id)))
+      .limit(1);
+    if (!afterTask) {
+      res.status(400).json({ error: "Invalid task page cursor." });
+      return;
+    }
+  }
+  const where = afterTask
+    ? and(
+      eq(tasksTable.runId, run.id),
+      sql`(${tasksTable.title}, ${tasksTable.id}) > (${afterTask.title}, ${afterTask.id})`,
+    )
+    : eq(tasksTable.runId, run.id);
+  const rows = await db
+    .select()
+    .from(tasksTable)
+    .where(where)
+    .orderBy(asc(tasksTable.title), asc(tasksTable.id))
+    .limit(RUN_DETAIL_TASK_PAGE_SIZE + 1);
+  const items = rows.slice(0, RUN_DETAIL_TASK_PAGE_SIZE).map((task) => ({
+    id: task.id,
+    run_id: task.runId,
+    title: task.title,
+    owner: task.owner,
+    due_date: task.dueDate,
+    priority: task.priority,
+    done: task.done,
+  }));
+  const response = {
+    items,
+    next_cursor: rows.length > RUN_DETAIL_TASK_PAGE_SIZE ? items.at(-1)?.id ?? null : null,
+  };
+  res.json(GetRunTasksResponse.parse(response));
 });
 
 router.get("/runs/:id/events", async (req, res): Promise<void> => {

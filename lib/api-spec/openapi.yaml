@@ -107,6 +107,40 @@ paths:
                 $ref: "#/components/schemas/RunDetail"
         "404":
           description: Run not found or owned by another user
+  /runs/{id}/tasks/{cursor}:
+    get:
+      operationId: getRunTasks
+      tags: [tasks]
+      summary: Get one page of a run's tasks
+      description: Owner-scoped task pagination for large run details. Use the literal start cursor for the first page, then the returned next_cursor.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: path
+          required: true
+          description: The literal start for the first page, or a task ID returned as next_cursor.
+          schema:
+            type: string
+            maxLength: 36
+            pattern: "^(start|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+      responses:
+        "400":
+          description: Invalid task page limit or cursor
+        "401":
+          description: Sign-in required
+        "200":
+          description: One page of tasks ordered by title and ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskPage"
+        "404":
+          description: Run not found or owned by another user
   /runs/{id}/events:
     get:
       operationId: getRunEvents
@@ -252,8 +286,30 @@ components:
           properties:
             tasks:
               type: array
+              maxItems: 100
               items:
                 $ref: "#/components/schemas/Task"
+            task_count:
+              type: integer
+              minimum: 0
+              description: Total tasks in the run, including tasks on subsequent pages.
+            next_tasks_cursor:
+              type: ["string", "null"]
+              format: uuid
+              description: ID of the last task in the initial page, or null when the complete task list is included.
+    TaskPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/Task"
+        next_cursor:
+          type: ["string", "null"]
+          format: uuid
+          description: ID of the last task in this page, or null when no further tasks remain.
     RunEvent:
       type: object
       required:

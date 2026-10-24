@@ -72,6 +72,49 @@ test('task completion survives navigation, refetch, and reload (including undo)'
   expect(api.posts).toEqual([]);
 });
 
+test('large run details render tasks in bounded pages and expose the complete task list', async ({ page, api }) => {
+  const taskTotal = 235;
+  const tasks = Array.from({ length: taskTotal }, (_, index) => {
+    const sequence = String(index).padStart(3, '0');
+    return {
+      id: `large-task-${sequence}`,
+      run_id: 'large-task-run',
+      title: `Action item ${sequence}`,
+      owner: 'Fixture owner',
+      due_date: null,
+      priority: 'medium' as const,
+      done: false,
+    };
+  });
+  api.seed({ ...run('large-task-run', 'succeeded'), tasks });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/runs/large-task-run');
+
+  const rows = page.locator('[data-testid^="row-task-large-task-"]');
+  const taskCount = page.getByTestId('text-task-count');
+  const loadMore = page.getByTestId('button-load-more-tasks');
+  await expect(rows).toHaveCount(100);
+  await expect(taskCount).toHaveText('100 of 235 tasks');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  await loadMore.click();
+  await expect(rows).toHaveCount(200);
+  await expect(taskCount).toHaveText('200 of 235 tasks');
+  await loadMore.click();
+  await expect(rows).toHaveCount(taskTotal);
+  await expect(taskCount).toHaveText('235 tasks');
+  await expect(loadMore).toHaveCount(0);
+  expect(api.taskPageReads).toEqual([
+    { runId: 'large-task-run', cursor: 'large-task-099' },
+    { runId: 'large-task-run', cursor: 'large-task-199' },
+  ]);
+
+  const lastTask = page.getByTestId('checkbox-task-large-task-234');
+  await lastTask.click();
+  await expect(lastTask).toBeChecked();
+  expect(api.patches).toEqual([{ id: 'large-task-234', data: { done: true } }]);
+});
+
 test('signed-out visitors stay behind the existing sign-in gate without API reads', async ({ page, api }) => {
   await page.addInitScript(() => localStorage.setItem('fixture-signed-out', 'true'));
   await page.goto('/runs/private-run');

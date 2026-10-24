@@ -8,6 +8,17 @@
 import type { Run } from './run';
 import type { Task } from './task';
 
-export type RunDetail = Run & {
+export type RunDetail = Run & ({
+  /** @maxItems 100 */
   tasks: Task[];
-};
+  /**
+     * Total tasks in the run, including tasks on subsequent pages.
+     * @minimum 0
+     */
+  task_count?: number;
+  /**
+     * ID of the last task in the initial page, or null when the complete task list is included.
+     * @nullable
+     */
+  next_tasks_cursor?: string | null;
+});
