@@ -27,10 +27,12 @@ changes; the existing post-merge script does this.
 
 Each authenticated list request also emits a structured `run_history_list`
 log record. It includes outcome, bounded page/result counts, processing time,
-response bytes, fixed time/size buckets, and whether another page exists.
-Invalid input and database failures use fixed outcomes without logging the
-exception. This event deliberately excludes note content, owner/run IDs, and
-cursor tokens; do not add request or database objects to its fields.
+separate `run_query_duration_ms` and `task_count_duration_ms` measurements,
+response bytes, fixed time/size buckets, and whether another page exists. Stage
+durations are null when a stage was not run or could not be measured. Invalid
+input and database failures use fixed outcomes without logging the exception.
+This event deliberately excludes note content, owner/run IDs, and cursor
+tokens; do not add request or database objects to its fields.
 
 The API also evaluates those metrics in a process-local rolling five-minute
 window with 30-second bucket resolution (alert recovery can lag expiry by up

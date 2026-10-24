@@ -20,6 +20,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
   const historyMetrics: RunHistoryMetric[] = [];
   const responseLengths: number[] = [];
   const historyMonitor = createRunHistoryMonitor({ now: () => 0, emit: () => {} });
+  let stageClock = 0;
   const secretTail = "NOT-FOR-HISTORY-PAYLOAD";
   const notes = "🙂".repeat(230) + secretTail;
   const app = express();
@@ -30,7 +31,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
     if (!user) { requireUser(req, res, next); return; }
     res.locals.userId = user;
     next();
-  }, (record) => { historyMetrics.push(record); }, historyMonitor));
+  }, (record) => { historyMetrics.push(record); }, historyMonitor, () => stageClock));
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -76,6 +77,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       assert.deepEqual(Object.keys(metric).sort(), [
         "duration_bucket", "duration_ms", "event", "has_next_page", "outcome",
         "page_size", "response_bytes", "response_size_bucket", "result_count", "result_count_bucket",
+        "run_query_duration_ms", "task_count_duration_ms",
       ]);
       assert.equal(metric.event, "run_history_list");
       assert.equal(metric.outcome, "success");
@@ -85,6 +87,8 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       assert.equal(metric.response_bytes, responseLengths[0]);
       assert.ok(metric.response_bytes > 0);
       assert.ok(Number.isFinite(metric.duration_ms) && metric.duration_ms >= 0);
+      assert.ok(metric.run_query_duration_ms !== null && Number.isFinite(metric.run_query_duration_ms));
+      assert.ok(metric.task_count_duration_ms !== null && Number.isFinite(metric.task_count_duration_ms));
       assert.ok(["under_100ms", "100ms_to_500ms", "500ms_to_2s", "2s_or_more"].includes(metric.duration_bucket));
       assert.ok(["under_1kb", "1kb_to_4kb", "4kb_to_16kb", "16kb_to_64kb", "64kb_or_more"].includes(metric.response_size_bucket));
       assert.equal(metric.has_next_page, true);
@@ -92,6 +96,33 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       for (const privateValue of [owner, otherOwner, notes, secretTail, first.items[0].id, first.next_cursor!]) {
         assert.ok(!serialized.includes(privateValue), "Telemetry must not contain note data, IDs, or cursors");
       }
+    });
+
+    await t.test("history metrics separate deterministic run-query and task-count delays", async () => {
+      const hookedPool = pool as unknown as { query: (...args: any[]) => any };
+      const hadOwnQuery = Object.hasOwn(pool, "query");
+      const originalQuery = hookedPool.query;
+      hookedPool.query = (...args: any[]) => {
+        const config = args[0];
+        const text = typeof config === "string" ? config : config.text;
+        const normalized = String(text).replaceAll('"', "").toLowerCase();
+        if (normalized.includes("from runs") && normalized.includes("owner_user_id")) stageClock += 17;
+        if (normalized.includes("from tasks") && normalized.includes("group by tasks.run_id")) stageClock += 31;
+        return originalQuery.apply(pool, args);
+      };
+      const metricStart = historyMetrics.length;
+      try {
+        await page("?limit=7");
+      } finally {
+        if (hadOwnQuery) hookedPool.query = originalQuery;
+        else delete (hookedPool as unknown as { query?: (...args: any[]) => any }).query;
+      }
+
+      const metric = historyMetrics[metricStart];
+      assert.equal(metric.outcome, "success");
+      assert.equal(metric.run_query_duration_ms, 17);
+      assert.equal(metric.task_count_duration_ms, 31);
+      assert.equal(metric.duration_ms, 48, "Total duration should still include both measured stages");
     });
 
     await t.test("default and maximum page sizes, short Unicode previews, and bounded task counts", async () => {
@@ -104,14 +135,15 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       const maximum = await page("?limit=50");
       assert.equal(maximum.items.length, 50);
       assert.ok(maximum.next_cursor);
-      assert.equal(historyMetrics[1].page_size, 50);
-      assert.equal(historyMetrics[1].result_count, 50);
-      assert.equal(historyMetrics[1].response_bytes, responseLengths[1]);
+      const maximumMetric = historyMetrics.at(-1)!;
+      assert.equal(maximumMetric.page_size, 50);
+      assert.equal(maximumMetric.result_count, 50);
+      assert.equal(maximumMetric.response_bytes, responseLengths.at(-1));
       const defaultResponseBytes = historyMetrics[0].response_bytes;
-      const maximumResponseBytes = historyMetrics[1].response_bytes;
+      const maximumResponseBytes = maximumMetric.response_bytes;
       assert.ok(defaultResponseBytes !== null && maximumResponseBytes !== null);
       assert.ok(maximumResponseBytes > defaultResponseBytes);
-      assert.equal(historyMetrics[1].has_next_page, true);
+      assert.equal(maximumMetric.has_next_page, true);
       const detail = await fetch(`${base}/runs/${expected[0]}`, { headers: { "x-test-user": owner } });
       const runDetail = GetRunResponse.parse(await detail.json());
       assert.equal(runDetail.input_text, notes, "Detail still exposes full notes only to their owner");
@@ -137,6 +169,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
 
     await t.test("invalid input fails closed, unauthenticated requests stay private, and empty history has no cursor", async () => {
       const invalidMetricsStart = historyMetrics.length;
+      const validRequestCount = historyMonitor.getSummary().request_count;
       const invalidRequests = [
         "?limit=0", "?limit=51", "?limit=-1", "?limit=1.5", "?limit=no",
         "?limit=2&limit=3", "?cursor=", "?cursor=no-json", `?cursor=${"a".repeat(257)}`,
@@ -147,7 +180,8 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       const invalidMetrics = historyMetrics.slice(invalidMetricsStart);
       assert.equal(invalidMetrics.length, invalidRequests.length);
       assert.ok(invalidMetrics.every((metric) => metric.outcome === "invalid" && metric.result_count === 0));
-      assert.equal(historyMonitor.getSummary().request_count, 10);
+      assert.ok(invalidMetrics.every((metric) => metric.run_query_duration_ms === null && metric.task_count_duration_ms === null));
+      assert.equal(historyMonitor.getSummary().request_count, validRequestCount);
       assert.ok(!JSON.stringify(invalidMetrics).includes("no-json"));
       assert.ok(!JSON.stringify(invalidMetrics).includes("one&cursor"));
       assert.equal((await request("", null)).status, 401);
@@ -160,6 +194,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       assert.equal(emptyMetric.result_count_bucket, "empty");
       assert.equal(emptyMetric.response_bytes, responseLengths.at(-1));
       assert.equal(emptyMetric.has_next_page, false);
+      assert.equal(emptyMetric.task_count_duration_ms, null, "Empty pages skip the task-count query");
     });
 
     await t.test("cursor and forged ownership inputs cannot expose another account or legacy data", async () => {

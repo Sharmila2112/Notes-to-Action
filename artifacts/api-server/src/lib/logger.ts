@@ -22,6 +22,8 @@ export const logger = pino({
 export type RunHistoryMetricInput = {
   outcome: "success" | "invalid" | "error";
   durationMs: number;
+  runQueryDurationMs: number | null;
+  taskCountDurationMs: number | null;
   pageSize: number;
   resultCount: number;
   responseBytes: number | null;
@@ -33,6 +35,8 @@ export type RunHistoryMetric = {
   outcome: RunHistoryMetricInput["outcome"];
   duration_ms: number;
   duration_bucket: "under_100ms" | "100ms_to_500ms" | "500ms_to_2s" | "2s_or_more";
+  run_query_duration_ms: number | null;
+  task_count_duration_ms: number | null;
   page_size: number;
   result_count: number;
   result_count_bucket: "not_applicable" | "empty" | "partial_page" | "full_page";
@@ -53,6 +57,12 @@ export function logRunHistoryMetric(
   sink: RunHistoryMetricSink = (record) => logger.info(record, "Run history request"),
 ): void {
   const durationMs = Number.isFinite(input.durationMs) ? Math.max(0, Math.round(input.durationMs)) : 0;
+  const runQueryDurationMs = input.runQueryDurationMs !== null && Number.isFinite(input.runQueryDurationMs)
+    ? Math.max(0, Math.round(input.runQueryDurationMs))
+    : null;
+  const taskCountDurationMs = input.taskCountDurationMs !== null && Number.isFinite(input.taskCountDurationMs)
+    ? Math.max(0, Math.round(input.taskCountDurationMs))
+    : null;
   const resultCount = Number.isInteger(input.resultCount) ? Math.max(0, Math.min(50, input.resultCount)) : 0;
   const pageSize = Number.isInteger(input.pageSize) ? Math.max(0, Math.min(50, input.pageSize)) : 0;
   const responseBytes = input.responseBytes !== null && Number.isInteger(input.responseBytes)
@@ -66,6 +76,8 @@ export function logRunHistoryMetric(
     duration_bucket: durationMs < 100 ? "under_100ms"
       : durationMs < 500 ? "100ms_to_500ms"
         : durationMs < 2_000 ? "500ms_to_2s" : "2s_or_more",
+    run_query_duration_ms: runQueryDurationMs,
+    task_count_duration_ms: taskCountDurationMs,
     page_size: pageSize,
     result_count: resultCount,
     result_count_bucket: input.outcome !== "success" ? "not_applicable"

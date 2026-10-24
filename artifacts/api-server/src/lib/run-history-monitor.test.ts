@@ -15,6 +15,8 @@ function metric(duration: number, outcome: RunHistoryMetric["outcome"] = "succes
     outcome,
     duration_ms: duration,
     duration_bucket: duration >= 500 ? "500ms_to_2s" : "under_100ms",
+    run_query_duration_ms: null,
+    task_count_duration_ms: null,
     page_size: 20,
     result_count: 20,
     result_count_bucket: "full_page",

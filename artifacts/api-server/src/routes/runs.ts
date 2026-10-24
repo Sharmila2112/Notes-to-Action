@@ -59,11 +59,25 @@ function responseBytes(res: Response, body: unknown): number {
   return Buffer.byteLength(JSON.stringify(body) ?? "", "utf8");
 }
 
+async function measureHistoryStage<T>(
+  now: () => number,
+  recordDuration: (durationMs: number) => void,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const startedAt = now();
+  try {
+    return await operation();
+  } finally {
+    recordDuration(now() - startedAt);
+  }
+}
+
 // Tests supply a trusted identity middleware; production always uses Clerk.
 export function createRunsRouter(
   authenticate: RequestHandler = requireUser,
   runHistoryMetricSink?: RunHistoryMetricSink,
   historyMonitor: Pick<RunHistoryMonitor, "record"> = runHistoryMonitor,
+  historyClock: () => number = () => performance.now(),
 ): IRouter {
 const router: IRouter = Router();
 router.use(authenticate);
@@ -73,9 +87,11 @@ router.use((_req, res, next) => {
 });
 
 router.get("/runs", async (req, res): Promise<void> => {
-  const startedAt = performance.now();
+  const startedAt = historyClock();
   let pageSize = 0;
   let metricRecorded = false;
+  let runQueryDurationMs: number | null = null;
+  let taskCountDurationMs: number | null = null;
   const recordMetric = (
     outcome: "success" | "invalid" | "error",
     resultCount: number,
@@ -85,7 +101,9 @@ router.get("/runs", async (req, res): Promise<void> => {
     metricRecorded = true;
     logRunHistoryMetric({
       outcome,
-      durationMs: performance.now() - startedAt,
+      durationMs: historyClock() - startedAt,
+      runQueryDurationMs,
+      taskCountDurationMs,
       pageSize,
       resultCount,
       responseBytes,
@@ -129,29 +147,37 @@ router.get("/runs", async (req, res): Promise<void> => {
       return;
     }
     const limit = pageSize;
-    const rows = await db
-      .select({
-        id: runsTable.id,
-        inputPreview: sql<string>`left(${runsTable.inputText}, 200)`,
-        status: runsTable.status,
-        startedAt: runsTable.startedAt,
-        finishedAt: runsTable.finishedAt,
-        // JS Date loses microseconds. Keep the exact DB timestamp for the cursor.
-        cursorAt: sql<string>`to_char(${runsTable.startedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
-      })
-      .from(runsTable)
-      .where(and(
-        eq(runsTable.ownerUserId, res.locals.userId),
-        cursor ? sql`(${runsTable.startedAt}, ${runsTable.id}) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : undefined,
-      ))
-      .orderBy(desc(runsTable.startedAt), desc(runsTable.id))
-      .limit(limit + 1);
+    const rows = await measureHistoryStage(
+      historyClock,
+      (durationMs) => { runQueryDurationMs = durationMs; },
+      async () => await db
+        .select({
+          id: runsTable.id,
+          inputPreview: sql<string>`left(${runsTable.inputText}, 200)`,
+          status: runsTable.status,
+          startedAt: runsTable.startedAt,
+          finishedAt: runsTable.finishedAt,
+          // JS Date loses microseconds. Keep the exact DB timestamp for the cursor.
+          cursorAt: sql<string>`to_char(${runsTable.startedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+        })
+        .from(runsTable)
+        .where(and(
+          eq(runsTable.ownerUserId, res.locals.userId),
+          cursor ? sql`(${runsTable.startedAt}, ${runsTable.id}) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : undefined,
+        ))
+        .orderBy(desc(runsTable.startedAt), desc(runsTable.id))
+        .limit(limit + 1),
+    );
     const visible = rows.slice(0, limit);
     // Count tasks only for the bounded, owner-scoped page, not the entire history.
-    const counts = visible.length ? await db
-      .select({ runId: tasksTable.runId, taskCount: count() })
-      .from(tasksTable).where(inArray(tasksTable.runId, visible.map((row) => row.id)))
-      .groupBy(tasksTable.runId) : [];
+    const counts = visible.length ? await measureHistoryStage(
+      historyClock,
+      (durationMs) => { taskCountDurationMs = durationMs; },
+      async () => await db
+        .select({ runId: tasksTable.runId, taskCount: count() })
+        .from(tasksTable).where(inArray(tasksTable.runId, visible.map((row) => row.id)))
+        .groupBy(tasksTable.runId),
+    ) : [];
     const countById = new Map(counts.map((row) => [row.runId, row.taskCount]));
     const last = visible.at(-1);
     const response = ListRunsResponse.parse({
