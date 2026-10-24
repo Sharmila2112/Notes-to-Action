@@ -25,6 +25,13 @@ only IDs in the visible page and the task/run index, avoiding a full-history
 join. Apply the development schema with the usual DB push after these index
 changes; the existing post-merge script does this.
 
+Each authenticated list request also emits a structured `run_history_list`
+log record. It includes outcome, bounded page/result counts, processing time,
+response bytes, fixed time/size buckets, and whether another page exists.
+Invalid input and database failures use fixed outcomes without logging the
+exception. This event deliberately excludes note content, owner/run IDs, and
+cursor tokens; do not add request or database objects to its fields.
+
 ## Extraction recovery visibility
 
 Recovery checks run on startup and every 15 seconds. They mark abandoned

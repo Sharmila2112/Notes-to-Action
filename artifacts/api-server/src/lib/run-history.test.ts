@@ -7,6 +7,7 @@ import { clerkMiddleware } from "@clerk/express";
 import { desc, eq, inArray, sql } from "drizzle-orm";
 import { GetRunResponse, ListRunsResponse } from "@workspace/api-zod";
 import { db, pool, runsTable, tasksTable } from "@workspace/db";
+import type { RunHistoryMetric } from "./logger";
 import { createRunsRouter } from "../routes/runs";
 import { requireUser } from "../middlewares/require-user";
 import { encodeHistoryCursor } from "./run-history-cursor";
@@ -15,6 +16,8 @@ test("history pages are bounded, precise, private, and stable while newer runs a
   const owner = `history-test-${randomUUID()}`;
   const otherOwner = `history-other-${randomUUID()}`;
   const ids: string[] = [];
+  const historyMetrics: RunHistoryMetric[] = [];
+  const responseLengths: number[] = [];
   const secretTail = "NOT-FOR-HISTORY-PAYLOAD";
   const notes = "🙂".repeat(230) + secretTail;
   const app = express();
@@ -25,7 +28,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
     if (!user) { requireUser(req, res, next); return; }
     res.locals.userId = user;
     next();
-  }));
+  }, (record) => { historyMetrics.push(record); }));
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -37,6 +40,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
     const response = await request(suffix, user);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "private, no-store");
+    responseLengths.push(Number(response.headers.get("content-length")));
     const raw = await response.json();
     assert.ok(!JSON.stringify(raw).includes(secretTail));
     assert.ok(!JSON.stringify(raw).includes('"input_text"'));
@@ -64,6 +68,29 @@ test("history pages are bounded, precise, private, and stable while newer runs a
     })));
     const first = await page();
 
+    await t.test("telemetry reports timing and response size without private identifiers or content", () => {
+      const [metric] = historyMetrics;
+      assert.deepEqual(Object.keys(metric).sort(), [
+        "duration_bucket", "duration_ms", "event", "has_next_page", "outcome",
+        "page_size", "response_bytes", "response_size_bucket", "result_count", "result_count_bucket",
+      ]);
+      assert.equal(metric.event, "run_history_list");
+      assert.equal(metric.outcome, "success");
+      assert.equal(metric.page_size, 20);
+      assert.equal(metric.result_count, 20);
+      assert.equal(metric.result_count_bucket, "full_page");
+      assert.equal(metric.response_bytes, responseLengths[0]);
+      assert.ok(metric.response_bytes > 0);
+      assert.ok(Number.isFinite(metric.duration_ms) && metric.duration_ms >= 0);
+      assert.ok(["under_100ms", "100ms_to_500ms", "500ms_to_2s", "2s_or_more"].includes(metric.duration_bucket));
+      assert.ok(["under_1kb", "1kb_to_4kb", "4kb_to_16kb", "16kb_to_64kb", "64kb_or_more"].includes(metric.response_size_bucket));
+      assert.equal(metric.has_next_page, true);
+      const serialized = JSON.stringify(historyMetrics);
+      for (const privateValue of [owner, otherOwner, notes, secretTail, first.items[0].id, first.next_cursor!]) {
+        assert.ok(!serialized.includes(privateValue), "Telemetry must not contain note data, IDs, or cursors");
+      }
+    });
+
     await t.test("default and maximum page sizes, short Unicode previews, and bounded task counts", async () => {
       assert.equal(first.items.length, 20);
       assert.deepEqual(first.items.map((row) => row.id), expected.slice(0, 20));
@@ -74,6 +101,14 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       const maximum = await page("?limit=50");
       assert.equal(maximum.items.length, 50);
       assert.ok(maximum.next_cursor);
+      assert.equal(historyMetrics[1].page_size, 50);
+      assert.equal(historyMetrics[1].result_count, 50);
+      assert.equal(historyMetrics[1].response_bytes, responseLengths[1]);
+      const defaultResponseBytes = historyMetrics[0].response_bytes;
+      const maximumResponseBytes = historyMetrics[1].response_bytes;
+      assert.ok(defaultResponseBytes !== null && maximumResponseBytes !== null);
+      assert.ok(maximumResponseBytes > defaultResponseBytes);
+      assert.equal(historyMetrics[1].has_next_page, true);
       const detail = await fetch(`${base}/runs/${expected[0]}`, { headers: { "x-test-user": owner } });
       assert.equal(GetRunResponse.parse(await detail.json()).input_text, notes, "Detail still exposes full notes only to their owner");
     });
@@ -94,16 +129,29 @@ test("history pages are bounded, precise, private, and stable while newer runs a
     });
 
     await t.test("invalid input fails closed, unauthenticated requests stay private, and empty history has no cursor", async () => {
-      for (const suffix of [
+      const invalidMetricsStart = historyMetrics.length;
+      const invalidRequests = [
         "?limit=0", "?limit=51", "?limit=-1", "?limit=1.5", "?limit=no",
         "?limit=2&limit=3", "?cursor=", "?cursor=no-json", `?cursor=${"a".repeat(257)}`,
         `?cursor=${encodeHistoryCursor("2026-02-30T12:00:00.000000Z", randomUUID())}`,
         "?cursor=one&cursor=two",
-      ]) assert.equal((await request(suffix)).status, 400, suffix);
+      ];
+      for (const suffix of invalidRequests) assert.equal((await request(suffix)).status, 400, suffix);
+      const invalidMetrics = historyMetrics.slice(invalidMetricsStart);
+      assert.equal(invalidMetrics.length, invalidRequests.length);
+      assert.ok(invalidMetrics.every((metric) => metric.outcome === "invalid" && metric.result_count === 0));
+      assert.ok(!JSON.stringify(invalidMetrics).includes("no-json"));
+      assert.ok(!JSON.stringify(invalidMetrics).includes("one&cursor"));
       assert.equal((await request("", null)).status, 401);
       assert.equal((await request("?limit=invalid", null)).status, 401);
       const empty = await page("", `new-owner-${randomUUID()}`);
       assert.deepEqual(empty, { items: [], next_cursor: null });
+      const emptyMetric = historyMetrics.at(-1)!;
+      assert.equal(emptyMetric.outcome, "success");
+      assert.equal(emptyMetric.result_count, 0);
+      assert.equal(emptyMetric.result_count_bucket, "empty");
+      assert.equal(emptyMetric.response_bytes, responseLengths.at(-1));
+      assert.equal(emptyMetric.has_next_page, false);
     });
 
     await t.test("cursor and forged ownership inputs cannot expose another account or legacy data", async () => {
