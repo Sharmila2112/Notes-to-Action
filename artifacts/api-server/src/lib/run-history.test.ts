@@ -8,6 +8,7 @@ import { desc, eq, inArray, sql } from "drizzle-orm";
 import { GetRunResponse, ListRunsResponse } from "@workspace/api-zod";
 import { db, pool, runsTable, tasksTable } from "@workspace/db";
 import type { RunHistoryMetric } from "./logger";
+import { createRunHistoryMonitor } from "./run-history-monitor";
 import { createRunsRouter } from "../routes/runs";
 import { requireUser } from "../middlewares/require-user";
 import { encodeHistoryCursor } from "./run-history-cursor";
@@ -18,6 +19,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
   const ids: string[] = [];
   const historyMetrics: RunHistoryMetric[] = [];
   const responseLengths: number[] = [];
+  const historyMonitor = createRunHistoryMonitor({ now: () => 0, emit: () => {} });
   const secretTail = "NOT-FOR-HISTORY-PAYLOAD";
   const notes = "🙂".repeat(230) + secretTail;
   const app = express();
@@ -28,7 +30,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
     if (!user) { requireUser(req, res, next); return; }
     res.locals.userId = user;
     next();
-  }, (record) => { historyMetrics.push(record); }));
+  }, (record) => { historyMetrics.push(record); }, historyMonitor));
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -67,6 +69,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       runId: expected[0], title: `Task ${index}`, priority: "medium" as const,
     })));
     const first = await page();
+    assert.equal(historyMonitor.getSummary().request_count, 1);
 
     await t.test("telemetry reports timing and response size without private identifiers or content", () => {
       const [metric] = historyMetrics;
@@ -140,6 +143,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       const invalidMetrics = historyMetrics.slice(invalidMetricsStart);
       assert.equal(invalidMetrics.length, invalidRequests.length);
       assert.ok(invalidMetrics.every((metric) => metric.outcome === "invalid" && metric.result_count === 0));
+      assert.equal(historyMonitor.getSummary().request_count, 10);
       assert.ok(!JSON.stringify(invalidMetrics).includes("no-json"));
       assert.ok(!JSON.stringify(invalidMetrics).includes("one&cursor"));
       assert.equal((await request("", null)).status, 401);

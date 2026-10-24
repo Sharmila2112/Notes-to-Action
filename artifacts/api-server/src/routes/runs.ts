@@ -24,6 +24,7 @@ import {
 } from "@workspace/db";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger, logRunHistoryMetric, type RunHistoryMetricSink } from "../lib/logger";
+import { runHistoryMonitor, type RunHistoryMonitor } from "../lib/run-history-monitor";
 import { requireUser } from "../middlewares/require-user";
 import { createRunService } from "../lib/run-service";
 import { createRunStore, newLeaseExpiry, renewRunLease } from "../lib/run-store";
@@ -59,6 +60,7 @@ function responseBytes(res: Response, body: unknown): number {
 export function createRunsRouter(
   authenticate: RequestHandler = requireUser,
   runHistoryMetricSink?: RunHistoryMetricSink,
+  historyMonitor: Pick<RunHistoryMonitor, "record"> = runHistoryMonitor,
 ): IRouter {
 const router: IRouter = Router();
 router.use(authenticate);
@@ -85,7 +87,11 @@ router.get("/runs", async (req, res): Promise<void> => {
       resultCount,
       responseBytes,
       hasNextPage,
-    }, runHistoryMetricSink);
+    }, (record) => {
+      if (runHistoryMetricSink) runHistoryMetricSink(record);
+      else logger.info(record, "Run history request");
+      historyMonitor.record(record);
+    });
   };
   const rejectPagination = (message: string) => {
     const body = { error: message };

@@ -32,6 +32,20 @@ Invalid input and database failures use fixed outcomes without logging the
 exception. This event deliberately excludes note content, owner/run IDs, and
 cursor tokens; do not add request or database objects to its fields.
 
+The API also evaluates those metrics in a process-local rolling five-minute
+window with 30-second bucket resolution (alert recovery can lag expiry by up
+to one bucket). A warning event `run_history_latency_alert` is emitted when at
+least 10 valid list requests have occurred in the window and at least half
+took 500ms or longer. Alerts are repeated at most every five minutes while the
+condition persists; repeat events set `reminder: true`.
+`run_history_latency_cleared` is emitted when the condition no longer holds.
+Fixed thirty-second aggregate buckets bound memory, and a background check
+clears expired alerts even during quiet periods. To inspect these events, open
+the API server's deployment logs and filter for the fixed event names. Each
+instance reports only its own counts (`scope: process`); this is not a
+fleet-wide aggregate. No note, user, run, or cursor data is retained by the
+monitor.
+
 ## Extraction recovery visibility
 
 Recovery checks run on startup and every 15 seconds. They mark abandoned

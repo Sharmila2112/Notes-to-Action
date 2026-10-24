@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { startRunRecovery } from "./lib/run-recovery";
+import { startRunHistoryMonitoring } from "./lib/run-history-monitor";
 
 const rawPort = process.env["PORT"];
 
@@ -17,6 +18,7 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 await startRunRecovery();
+startRunHistoryMonitoring();
 app.listen(port, (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
