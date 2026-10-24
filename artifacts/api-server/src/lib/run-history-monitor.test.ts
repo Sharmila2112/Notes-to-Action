@@ -175,6 +175,54 @@ test("expired buckets stop contributing stage averages while newer samples remai
   assert.equal(cleared.task_count_avg_duration_ms, 300);
 });
 
+test("missing stage timings are not counted as zero or allowed to change alert thresholds", () => {
+  const h = harness();
+  for (let index = 0; index < 4; index += 1) {
+    h.monitor.record(metric(600, "success", 40, null));
+  }
+  for (let index = 0; index < 3; index += 1) {
+    h.monitor.record(metric(600, "success", null, 150));
+  }
+  for (let index = 0; index < 3; index += 1) {
+    h.monitor.record(metric(600, "success", null, null));
+  }
+
+  const warning = h.alerts()[0].record;
+  assert.equal(warning.request_count, 10);
+  assert.equal(warning.slow_request_count, 10);
+  assert.equal(warning.run_query_sample_count, 4);
+  assert.equal(warning.run_query_avg_duration_ms, 40);
+  assert.equal(warning.task_count_sample_count, 3);
+  assert.equal(warning.task_count_avg_duration_ms, 150);
+
+  for (let index = 0; index < 11; index += 1) h.monitor.record(metric(100));
+  const cleared = h.logs.at(-1)!.record;
+  assert.equal(cleared.event, "run_history_latency_cleared");
+  assert.equal(cleared.request_count, 21);
+  assert.equal(cleared.slow_request_count, 10);
+  assert.equal(cleared.run_query_sample_count, 4);
+  assert.equal(cleared.run_query_avg_duration_ms, 40);
+  assert.equal(cleared.task_count_sample_count, 3);
+  assert.equal(cleared.task_count_avg_duration_ms, 150);
+
+  const unmeasured = harness();
+  for (let index = 0; index < 10; index += 1) unmeasured.monitor.record(metric(600));
+  const unmeasuredWarning = unmeasured.alerts()[0].record;
+  assert.equal(unmeasuredWarning.request_count, 10);
+  assert.equal(unmeasuredWarning.run_query_sample_count, 0);
+  assert.equal(unmeasuredWarning.run_query_avg_duration_ms, null);
+  assert.equal(unmeasuredWarning.task_count_sample_count, 0);
+  assert.equal(unmeasuredWarning.task_count_avg_duration_ms, null);
+
+  for (let index = 0; index < 11; index += 1) unmeasured.monitor.record(metric(100));
+  const unmeasuredCleared = unmeasured.logs.at(-1)!.record;
+  assert.equal(unmeasuredCleared.event, "run_history_latency_cleared");
+  assert.equal(unmeasuredCleared.run_query_sample_count, 0);
+  assert.equal(unmeasuredCleared.run_query_avg_duration_ms, null);
+  assert.equal(unmeasuredCleared.task_count_sample_count, 0);
+  assert.equal(unmeasuredCleared.task_count_avg_duration_ms, null);
+});
+
 test("invalid pagination requests do not distort the valid-request slow-rate threshold", () => {
   const h = harness();
   for (let index = 0; index < 50; index += 1) h.monitor.record(metric(8_000, "invalid"));
