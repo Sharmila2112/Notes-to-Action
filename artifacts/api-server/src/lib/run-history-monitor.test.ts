@@ -52,6 +52,10 @@ test("one slow history request does not alert; sustained slowness crosses the th
   h.monitor.record(metric(2_000, "success", 50, 200));
   assert.equal(h.monitor.getSummary().request_count, 10);
   assert.equal(h.monitor.getSummary().slow_request_count, 1);
+  assert.equal(h.monitor.getSummary().slow_run_query_sample_count, 1);
+  assert.equal(h.monitor.getSummary().slow_run_query_avg_duration_ms, 50);
+  assert.equal(h.monitor.getSummary().slow_task_count_sample_count, 1);
+  assert.equal(h.monitor.getSummary().slow_task_count_avg_duration_ms, 200);
   assert.equal(h.alerts().length, 0, "A single slow response must not page operators");
 
   const privateMarkers = {
@@ -81,6 +85,10 @@ test("one slow history request does not alert; sustained slowness crosses the th
     run_query_avg_duration_ms: 30,
     task_count_sample_count: 18,
     task_count_avg_duration_ms: 110,
+    slow_run_query_sample_count: 9,
+    slow_run_query_avg_duration_ms: 50,
+    slow_task_count_sample_count: 9,
+    slow_task_count_avg_duration_ms: 200,
     slow_threshold_ms: 500,
     minimum_requests: 10,
     slow_rate_threshold: 0.5,
@@ -97,6 +105,10 @@ test("one slow history request does not alert; sustained slowness crosses the th
   assert.equal(h.logs.at(-1)!.record.run_query_avg_duration_ms, 30);
   assert.equal(h.logs.at(-1)!.record.task_count_sample_count, 18);
   assert.equal(h.logs.at(-1)!.record.task_count_avg_duration_ms, 110);
+  assert.equal(h.logs.at(-1)!.record.slow_run_query_sample_count, 9);
+  assert.equal(h.logs.at(-1)!.record.slow_run_query_avg_duration_ms, 50);
+  assert.equal(h.logs.at(-1)!.record.slow_task_count_sample_count, 9);
+  assert.equal(h.logs.at(-1)!.record.slow_task_count_avg_duration_ms, 200);
   assert.equal(h.alerts().length, 1);
 });
 
@@ -121,6 +133,10 @@ test("alerts are throttled, repeat only after the reminder interval, and clear w
   assert.equal(h.alerts()[1].record.run_query_avg_duration_ms, 25);
   assert.equal(h.alerts()[1].record.task_count_sample_count, 49);
   assert.equal(h.alerts()[1].record.task_count_avg_duration_ms, 75);
+  assert.equal(h.alerts()[1].record.slow_run_query_sample_count, 49);
+  assert.equal(h.alerts()[1].record.slow_run_query_avg_duration_ms, 25);
+  assert.equal(h.alerts()[1].record.slow_task_count_sample_count, 49);
+  assert.equal(h.alerts()[1].record.slow_task_count_avg_duration_ms, 75);
 
   h.advance(RUN_HISTORY_MONITOR_WINDOW_MS + RUN_HISTORY_MONITOR_BUCKET_MS);
   const summary = h.monitor.evaluate();
@@ -130,6 +146,10 @@ test("alerts are throttled, repeat only after the reminder interval, and clear w
   assert.equal(summary.run_query_avg_duration_ms, null);
   assert.equal(summary.task_count_sample_count, 0);
   assert.equal(summary.task_count_avg_duration_ms, null);
+  assert.equal(summary.slow_run_query_sample_count, 0);
+  assert.equal(summary.slow_run_query_avg_duration_ms, null);
+  assert.equal(summary.slow_task_count_sample_count, 0);
+  assert.equal(summary.slow_task_count_avg_duration_ms, null);
   assert.equal(h.logs.at(-1)!.record.event, "run_history_latency_cleared");
   assert.equal(h.logs.at(-1)!.level, "info");
 });
@@ -149,6 +169,10 @@ test("stage averages combine bucket summaries with the correct sample weights", 
   assert.equal(summary.run_query_avg_duration_ms, 150 / 11);
   assert.equal(summary.task_count_sample_count, 11);
   assert.equal(summary.task_count_avg_duration_ms, 1_300 / 11);
+  assert.equal(summary.slow_run_query_sample_count, 11);
+  assert.equal(summary.slow_run_query_avg_duration_ms, 150 / 11);
+  assert.equal(summary.slow_task_count_sample_count, 11);
+  assert.equal(summary.slow_task_count_avg_duration_ms, 1_300 / 11);
   assert.equal(h.alerts().length, 1, "Stage aggregation does not change alert throttling");
 });
 
@@ -173,6 +197,10 @@ test("expired buckets stop contributing stage averages while newer samples remai
   assert.equal(cleared.run_query_avg_duration_ms, 50);
   assert.equal(cleared.task_count_sample_count, 4);
   assert.equal(cleared.task_count_avg_duration_ms, 300);
+  assert.equal(cleared.slow_run_query_sample_count, 4);
+  assert.equal(cleared.slow_run_query_avg_duration_ms, 50);
+  assert.equal(cleared.slow_task_count_sample_count, 4);
+  assert.equal(cleared.slow_task_count_avg_duration_ms, 300);
 });
 
 test("missing stage timings are not counted as zero or allowed to change alert thresholds", () => {
@@ -194,6 +222,10 @@ test("missing stage timings are not counted as zero or allowed to change alert t
   assert.equal(warning.run_query_avg_duration_ms, 40);
   assert.equal(warning.task_count_sample_count, 3);
   assert.equal(warning.task_count_avg_duration_ms, 150);
+  assert.equal(warning.slow_run_query_sample_count, 4);
+  assert.equal(warning.slow_run_query_avg_duration_ms, 40);
+  assert.equal(warning.slow_task_count_sample_count, 3);
+  assert.equal(warning.slow_task_count_avg_duration_ms, 150);
 
   for (let index = 0; index < 11; index += 1) h.monitor.record(metric(100));
   const cleared = h.logs.at(-1)!.record;
@@ -204,6 +236,10 @@ test("missing stage timings are not counted as zero or allowed to change alert t
   assert.equal(cleared.run_query_avg_duration_ms, 40);
   assert.equal(cleared.task_count_sample_count, 3);
   assert.equal(cleared.task_count_avg_duration_ms, 150);
+  assert.equal(cleared.slow_run_query_sample_count, 4);
+  assert.equal(cleared.slow_run_query_avg_duration_ms, 40);
+  assert.equal(cleared.slow_task_count_sample_count, 3);
+  assert.equal(cleared.slow_task_count_avg_duration_ms, 150);
 
   const unmeasured = harness();
   for (let index = 0; index < 10; index += 1) unmeasured.monitor.record(metric(600));
@@ -213,6 +249,10 @@ test("missing stage timings are not counted as zero or allowed to change alert t
   assert.equal(unmeasuredWarning.run_query_avg_duration_ms, null);
   assert.equal(unmeasuredWarning.task_count_sample_count, 0);
   assert.equal(unmeasuredWarning.task_count_avg_duration_ms, null);
+  assert.equal(unmeasuredWarning.slow_run_query_sample_count, 0);
+  assert.equal(unmeasuredWarning.slow_run_query_avg_duration_ms, null);
+  assert.equal(unmeasuredWarning.slow_task_count_sample_count, 0);
+  assert.equal(unmeasuredWarning.slow_task_count_avg_duration_ms, null);
 
   for (let index = 0; index < 11; index += 1) unmeasured.monitor.record(metric(100));
   const unmeasuredCleared = unmeasured.logs.at(-1)!.record;
@@ -221,6 +261,10 @@ test("missing stage timings are not counted as zero or allowed to change alert t
   assert.equal(unmeasuredCleared.run_query_avg_duration_ms, null);
   assert.equal(unmeasuredCleared.task_count_sample_count, 0);
   assert.equal(unmeasuredCleared.task_count_avg_duration_ms, null);
+  assert.equal(unmeasuredCleared.slow_run_query_sample_count, 0);
+  assert.equal(unmeasuredCleared.slow_run_query_avg_duration_ms, null);
+  assert.equal(unmeasuredCleared.slow_task_count_sample_count, 0);
+  assert.equal(unmeasuredCleared.slow_task_count_avg_duration_ms, null);
 });
 
 test("invalid pagination requests do not distort the valid-request slow-rate threshold", () => {

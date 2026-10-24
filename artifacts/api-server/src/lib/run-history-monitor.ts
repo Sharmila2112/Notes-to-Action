@@ -24,6 +24,10 @@ type RunHistoryAlertMetrics = {
   run_query_avg_duration_ms: number | null;
   task_count_sample_count: number;
   task_count_avg_duration_ms: number | null;
+  slow_run_query_sample_count: number;
+  slow_run_query_avg_duration_ms: number | null;
+  slow_task_count_sample_count: number;
+  slow_task_count_avg_duration_ms: number | null;
   slow_threshold_ms: number;
   minimum_requests: number;
   slow_rate_threshold: number;
@@ -46,6 +50,8 @@ type RunHistoryBucket = {
   slowRequests: number;
   runQuery: StageAggregate;
   taskCount: StageAggregate;
+  slowRunQuery: StageAggregate;
+  slowTaskCount: StageAggregate;
 };
 
 function addStageSample(stage: StageAggregate, durationMs: number | null): void {
@@ -91,11 +97,15 @@ export function createRunHistoryMonitor(options: {
     let slowRequests = 0;
     const runQuery: StageAggregate = { sampleCount: 0, averageDurationMs: null };
     const taskCount: StageAggregate = { sampleCount: 0, averageDurationMs: null };
+    const slowRunQuery: StageAggregate = { sampleCount: 0, averageDurationMs: null };
+    const slowTaskCount: StageAggregate = { sampleCount: 0, averageDurationMs: null };
     for (const bucket of buckets) {
       requests += bucket.requests;
       slowRequests += bucket.slowRequests;
       mergeStage(runQuery, bucket.runQuery);
       mergeStage(taskCount, bucket.taskCount);
+      mergeStage(slowRunQuery, bucket.slowRunQuery);
+      mergeStage(slowTaskCount, bucket.slowTaskCount);
     }
     return {
       scope: "process",
@@ -108,6 +118,10 @@ export function createRunHistoryMonitor(options: {
       run_query_avg_duration_ms: runQuery.averageDurationMs,
       task_count_sample_count: taskCount.sampleCount,
       task_count_avg_duration_ms: taskCount.averageDurationMs,
+      slow_run_query_sample_count: slowRunQuery.sampleCount,
+      slow_run_query_avg_duration_ms: slowRunQuery.averageDurationMs,
+      slow_task_count_sample_count: slowTaskCount.sampleCount,
+      slow_task_count_avg_duration_ms: slowTaskCount.averageDurationMs,
       slow_threshold_ms: RUN_HISTORY_ALERT_THRESHOLDS.slowRequestMs,
       minimum_requests: RUN_HISTORY_ALERT_THRESHOLDS.minimumRequests,
       slow_rate_threshold: RUN_HISTORY_ALERT_THRESHOLDS.slowRequestRate,
@@ -150,12 +164,16 @@ export function createRunHistoryMonitor(options: {
             slowRequests: 0,
             runQuery: { sampleCount: 0, averageDurationMs: null },
             taskCount: { sampleCount: 0, averageDurationMs: null },
+            slowRunQuery: { sampleCount: 0, averageDurationMs: null },
+            slowTaskCount: { sampleCount: 0, averageDurationMs: null },
           };
           buckets.push(bucket);
         }
         bucket.requests += 1;
         if (metric.duration_ms >= RUN_HISTORY_ALERT_THRESHOLDS.slowRequestMs) {
           bucket.slowRequests += 1;
+          addStageSample(bucket.slowRunQuery, metric.run_query_duration_ms);
+          addStageSample(bucket.slowTaskCount, metric.task_count_duration_ms);
         }
         addStageSample(bucket.runQuery, metric.run_query_duration_ms);
         addStageSample(bucket.taskCount, metric.task_count_duration_ms);

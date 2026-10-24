@@ -46,13 +46,17 @@ clears expired alerts even during quiet periods. To inspect these events, open
 the API server's deployment logs and filter for the fixed event names. Each
 instance reports only its own counts (`scope: process`); this is not a
 fleet-wide aggregate. No note, user, run, or cursor data is retained by the
-monitor. Warning, reminder, and cleared events also include per-stage sample
-counts (`run_query_sample_count`, `task_count_sample_count`) and average
-durations in milliseconds (`run_query_avg_duration_ms`,
-`task_count_avg_duration_ms`). A stage count includes only requests where that
-stage was measured; its average is `null` when no stage samples remain in the
-window. The monitor keeps only these online aggregates in the existing bounded
-buckets, not individual request timings.
+monitor. Warning, reminder, and cleared events include per-stage sample counts
+(`run_query_sample_count`, `task_count_sample_count`) and average durations in
+milliseconds (`run_query_avg_duration_ms`, `task_count_avg_duration_ms`) across
+all valid requests. They also include slow-only counts and averages
+(`slow_run_query_sample_count`, `slow_task_count_sample_count`,
+`slow_run_query_avg_duration_ms`, `slow_task_count_avg_duration_ms`), using only
+requests whose total duration meets the 500ms slow-request threshold. Fast
+requests do not dilute those slow-only averages. Each stage count includes only
+requests where that stage was measured; an average is `null` when no stage
+samples remain in the window. The monitor keeps only these online aggregates
+in the existing bounded buckets, not individual request timings.
 
 ## Extraction recovery visibility
 
