@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { RunStatus } from './runStatus';
 
 export type ListRunsParams = {
 /**
@@ -19,4 +20,23 @@ limit?: number;
  * @pattern ^[A-Za-z0-9_-]+$
  */
 cursor?: string;
+/**
+ * Case-insensitive literal substring search across the signed-in user's saved notes.
+ * @maxLength 200
+ */
+search?: string;
+/**
+ * Include runs started on or after this UTC calendar date.
+ * @pattern ^\d{4}-\d{2}-\d{2}$
+ */
+from?: string;
+/**
+ * Include runs started on or before this UTC calendar date.
+ * @pattern ^\d{4}-\d{2}-\d{2}$
+ */
+to?: string;
+/**
+ * Include only runs with this status.
+ */
+status?: RunStatus;
 };

@@ -85,3 +85,49 @@ test('mobile history pages append without making the document horizontally scrol
   await expect(page.locator('.run-row')).toHaveCount(21);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test('filters search the complete history, keep pages bounded, reset cursors, and clear safely', async ({ page, api }) => {
+  for (let index = 1; index <= 45; index += 1) {
+    const id = `filtered-${String(index).padStart(3, '0')}`;
+    api.seed({
+      ...run(id, index <= 25 ? 'succeeded' : 'failed'),
+      input_text: `Quarterly planning notes ${index}`,
+      started_at: new Date(Date.UTC(2026, 9, 20, 0, index)).toISOString(),
+    });
+  }
+  await page.goto('/runs');
+  await expect(page.locator('.run-row')).toHaveCount(20);
+  await page.getByTestId('input-history-search').fill('planning');
+  await page.getByTestId('input-history-from').fill('2026-10-20');
+  await page.getByTestId('input-history-to').fill('2026-10-20');
+  await page.getByTestId('select-history-status').selectOption('succeeded');
+  await page.getByTestId('button-apply-history-filters').click();
+  await expect(page.locator('.run-row')).toHaveCount(20);
+  await expect(page.locator('.run-row').first()).toHaveAttribute('href', '/runs/filtered-025');
+  await expect(page.locator('.run-row').last()).toHaveAttribute('href', '/runs/filtered-006');
+  expect(api.historyReads.at(-1)).toEqual({
+    cursor: null, limit: 20,
+    filters: { search: 'planning', from: '2026-10-20', to: '2026-10-20', status: 'succeeded' },
+  });
+  await page.getByTestId('button-load-more').click();
+  await expect(page.locator('.run-row')).toHaveCount(25);
+  expect(api.historyReads.at(-1)?.cursor).toBe('filtered-006');
+  await page.getByTestId('select-history-status').selectOption('failed');
+  await page.getByTestId('button-apply-history-filters').click();
+  await expect(page.locator('.run-row')).toHaveCount(20);
+  await expect(page.locator('.run-row').first()).toHaveAttribute('href', '/runs/filtered-045');
+  expect(api.historyReads.at(-1)).toEqual({
+    cursor: null, limit: 20,
+    filters: { search: 'planning', from: '2026-10-20', to: '2026-10-20', status: 'failed' },
+  });
+  await page.getByTestId('button-clear-history-filters').click();
+  await expect(page.locator('.run-row')).toHaveCount(20);
+  expect(api.historyReads.at(-1)).toEqual({ cursor: null, limit: 20 });
+  await page.getByTestId('input-history-search').fill('no matching phrase');
+  await page.getByTestId('button-apply-history-filters').click();
+  await expect(page.getByText('No matching runs')).toBeVisible();
+  await expect(page.getByText('No runs yet')).toHaveCount(0);
+  await page.getByTestId('button-clear-empty-history').click();
+  await expect(page.locator('.run-row')).toHaveCount(20);
+  expect(api.unexpected).toEqual([]);
+});

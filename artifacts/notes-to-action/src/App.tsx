@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { UserButton } from '@clerk/react';
 import { AuthProvider } from '@/components/auth';
@@ -341,19 +341,74 @@ function Home() {
 }
 
 function RunsPage() {
+  type HistoryFilters = { search: string; from: string; to: string; status: RunStatus | '' };
+  const emptyFilters: HistoryFilters = { search: '', from: '', to: '', status: '' };
+  const [draftFilters, setDraftFilters] = useState<HistoryFilters>(emptyFilters);
+  const [appliedFilters, setAppliedFilters] = useState<HistoryFilters>(emptyFilters);
+  const hasFilters = Object.values(appliedFilters).some(Boolean);
   const runs = useInfiniteQuery({
-    queryKey: [...getListRunsQueryKey(), 'infinite', { limit: 20 }],
+    queryKey: [...getListRunsQueryKey(), 'infinite', { limit: 20, ...appliedFilters }],
     initialPageParam: null as string | null,
-    queryFn: ({ pageParam, signal }) => listRuns({ limit: 20, ...(pageParam ? { cursor: pageParam } : {}) }, { signal }),
+    queryFn: ({ pageParam, signal }) => listRuns({
+      limit: 20,
+      ...(pageParam ? { cursor: pageParam } : {}),
+      ...(appliedFilters.search ? { search: appliedFilters.search } : {}),
+      ...(appliedFilters.from ? { from: appliedFilters.from } : {}),
+      ...(appliedFilters.to ? { to: appliedFilters.to } : {}),
+      ...(appliedFilters.status ? { status: appliedFilters.status } : {}),
+    }, { signal }),
     getNextPageParam: (page) => page.next_cursor ?? undefined,
     retry: false,
   });
   const items = runs.data?.pages.flatMap((page) => page.items) ?? [];
+  const applyFilters = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAppliedFilters({ ...draftFilters, search: draftFilters.search.trim() });
+  };
+  const clearFilters = () => {
+    setDraftFilters(emptyFilters);
+    setAppliedFilters(emptyFilters);
+  };
   return <main className="main-wrap">
     <div className="intro-row">
       <div><div className="eyebrow">Your private record</div><h1 className="page-title">Run history</h1><p className="lede">Your extractions, preserved with their status and task count. Only you can access these runs.</p></div>
       <Link href="/" className="button-primary" style={{ textDecoration: 'none' }} data-testid="link-create-extraction"><Sparkles size={15} /> New extraction</Link>
     </div>
+    <form className="history-filters panel" onSubmit={applyFilters} aria-label="Filter run history">
+      <label className="history-search-field">
+        <span>Search notes</span>
+        <input
+          type="search"
+          value={draftFilters.search}
+          maxLength={200}
+          placeholder="Find words from a meeting"
+          onChange={(event) => setDraftFilters((current) => ({ ...current, search: event.target.value }))}
+          data-testid="input-history-search"
+        />
+      </label>
+      <label>
+        <span>Started from</span>
+        <input type="date" value={draftFilters.from} onChange={(event) => setDraftFilters((current) => ({ ...current, from: event.target.value }))} data-testid="input-history-from" />
+      </label>
+      <label>
+        <span>Started through</span>
+        <input type="date" value={draftFilters.to} onChange={(event) => setDraftFilters((current) => ({ ...current, to: event.target.value }))} data-testid="input-history-to" />
+      </label>
+      <label>
+        <span>Status</span>
+        <select value={draftFilters.status} onChange={(event) => setDraftFilters((current) => ({ ...current, status: event.target.value as RunStatus | '' }))} data-testid="select-history-status">
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="running">Running</option>
+          <option value="succeeded">Succeeded</option>
+          <option value="failed">Failed</option>
+        </select>
+      </label>
+      <div className="history-filter-actions">
+        <button type="submit" className="button-primary" data-testid="button-apply-history-filters">Apply filters</button>
+        <button type="button" className="button-secondary" onClick={clearFilters} disabled={!hasFilters && !Object.values(draftFilters).some(Boolean)} data-testid="button-clear-history-filters">Clear</button>
+      </div>
+    </form>
     {runs.isPending ? <div className="panel task-skeleton" role="status" aria-label="Loading run history"><div className="loading-line" /><div className="loading-line" /><div className="loading-line" /></div> :
       !runs.data && runs.isError ? <div className="error-card" role="alert"><div className="error-title"><AlertCircle size={16} />History could not load</div><button type="button" className="button-secondary" onClick={() => runs.refetch()} data-testid="button-retry-history"><RotateCcw size={14} /> Try again</button></div> :
         items.length ? <section className="panel run-list" aria-label="Past extraction runs" aria-busy={runs.isFetching}>
@@ -364,7 +419,8 @@ function RunsPage() {
             <span className="run-count">{run.task_count} {run.task_count === 1 ? 'task' : 'tasks'}</span>
             <span className="run-date">{formatDate(run.started_at)}</span>
           </Link>)}
-        </section> : <section className="panel history-empty"><History size={20} color="#8d9b8f" /><strong>No runs yet</strong><span className="subtle">Your first extraction will be saved here.</span><div><Link href="/" className="button-secondary" style={{ textDecoration: 'none', marginTop: 16 }} data-testid="link-first-run"><Sparkles size={14} /> Start an extraction</Link></div></section>}
+        </section> : hasFilters ? <section className="panel history-empty"><History size={20} color="#8d9b8f" /><strong>No matching runs</strong><span className="subtle">Try changing or clearing your filters.</span><div><button type="button" className="button-secondary" onClick={clearFilters} style={{ marginTop: 16 }} data-testid="button-clear-empty-history">Clear filters</button></div></section> :
+          <section className="panel history-empty"><History size={20} color="#8d9b8f" /><strong>No runs yet</strong><span className="subtle">Your first extraction will be saved here.</span><div><Link href="/" className="button-secondary" style={{ textDecoration: 'none', marginTop: 16 }} data-testid="link-first-run"><Sparkles size={14} /> Start an extraction</Link></div></section>}
     {runs.isFetchNextPageError && <div className="error-card" role="alert" style={{ marginTop: 16 }}>More runs could not load. Your loaded runs are still here. Try again below.</div>}
     {runs.isRefetchError && !runs.isFetchNextPageError && runs.data && <div className="error-card" role="alert" style={{ marginTop: 16 }}>
       History could not refresh. Showing previously loaded runs.{' '}

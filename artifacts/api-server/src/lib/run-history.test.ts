@@ -173,6 +173,7 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       const invalidRequests = [
         "?limit=0", "?limit=51", "?limit=-1", "?limit=1.5", "?limit=no",
         "?limit=2&limit=3", "?cursor=", "?cursor=no-json", `?cursor=${"a".repeat(257)}`,
+        "?search=one&search=two", "?from=2026-02-30", "?from=2026-10-22&to=2026-10-21",
         `?cursor=${encodeHistoryCursor("2026-02-30T12:00:00.000000Z", randomUUID())}`,
         "?cursor=one&cursor=two",
       ];
@@ -432,6 +433,40 @@ test("history pages are bounded, precise, private, and stable while newer runs a
       const serializedMetrics = JSON.stringify(historyMetrics);
       assert.ok(!serializedMetrics.includes(fixtureNote));
       assert.ok(!serializedMetrics.includes(fixtureTaskPrefix));
+    });
+
+    await t.test("search, UTC date bounds, status, filtered cursors, and account isolation compose safely", async () => {
+      const filterTail = "FILTER-PRIVATE-TAIL";
+      const hiddenTail = (label: string) => `needle%_${label} ${"x".repeat(220)} ${filterTail}`;
+      const filteredRuns = await db.insert(runsTable).values([
+        { ownerUserId: owner, inputText: hiddenTail("first"), status: "succeeded" as const, startedAt: new Date("2026-10-20T00:00:00Z") },
+        { ownerUserId: owner, inputText: hiddenTail("second"), status: "succeeded" as const, startedAt: new Date("2026-10-22T23:59:59Z") },
+        { ownerUserId: owner, inputText: hiddenTail("failed"), status: "failed" as const, startedAt: new Date("2026-10-21T12:00:00Z") },
+        { ownerUserId: owner, inputText: hiddenTail("outside"), status: "succeeded" as const, startedAt: new Date("2026-10-23T00:00:00Z") },
+        { ownerUserId: otherOwner, inputText: hiddenTail("other-account"), status: "succeeded" as const, startedAt: new Date("2026-10-21T12:00:00Z") },
+      ]).returning({ id: runsTable.id });
+      ids.push(...filteredRuns.map((row) => row.id));
+      const expectedFiltered = [filteredRuns[1].id, filteredRuns[0].id];
+      const params = new URLSearchParams({
+        limit: "1", search: "needle%_", from: "2026-10-20", to: "2026-10-22", status: "succeeded",
+      });
+      const firstFilteredPage = await page(`?${params}`);
+      assert.equal(firstFilteredPage.items.length, 1);
+      assert.equal(firstFilteredPage.items[0].id, expectedFiltered[0]);
+      assert.ok(firstFilteredPage.next_cursor);
+      assert.ok(!JSON.stringify(firstFilteredPage).includes(filterTail));
+
+      const nextParams = new URLSearchParams(params);
+      nextParams.set("cursor", firstFilteredPage.next_cursor!);
+      const secondFilteredPage = await page(`?${nextParams}`);
+      assert.deepEqual(secondFilteredPage.items.map((item) => item.id), expectedFiltered.slice(1));
+      assert.equal(secondFilteredPage.next_cursor, null);
+
+      const changedFilter = new URLSearchParams(nextParams);
+      changedFilter.set("status", "failed");
+      assert.equal((await request(`?${changedFilter}`)).status, 400, "A cursor cannot be reused with different filters");
+      const otherAccount = await page(`?${params}`, otherOwner);
+      assert.deepEqual(otherAccount.items.map((item) => item.id), [filteredRuns[4].id], "An account sees its own match, not the other owner's runs");
     });
   } finally {
     await db.delete(runsTable).where(inArray(runsTable.id, ids));

@@ -53,6 +53,29 @@ paths:
             minLength: 1
             maxLength: 256
             pattern: "^[A-Za-z0-9_-]+$"
+        - name: search
+          in: query
+          description: Case-insensitive literal substring search across the signed-in user's saved notes.
+          schema:
+            type: string
+            maxLength: 200
+        - name: from
+          in: query
+          description: Include runs started on or after this UTC calendar date.
+          schema:
+            type: string
+            pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+        - name: to
+          in: query
+          description: Include runs started on or before this UTC calendar date.
+          schema:
+            type: string
+            pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+        - name: status
+          in: query
+          description: Include only runs with this status.
+          schema:
+            $ref: "#/components/schemas/RunStatus"
       responses:
         "400":
           description: Invalid pagination limit or cursor

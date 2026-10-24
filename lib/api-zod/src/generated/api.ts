@@ -28,11 +28,19 @@ export const listRunsQueryCursorMax = 256;
 
 
 export const listRunsQueryCursorRegExp = new RegExp('^[A-Za-z0-9_-]+$');
+export const listRunsQuerySearchMax = 200;
+
+export const listRunsQueryFromRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const listRunsQueryToRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
 
 
 export const ListRunsQueryParams = zod.object({
   "limit": zod.coerce.number().int().min(1).max(listRunsQueryLimitMax).default(listRunsQueryLimitDefault),
-  "cursor": zod.coerce.string().min(1).max(listRunsQueryCursorMax).regex(listRunsQueryCursorRegExp).optional().describe('Opaque next_cursor from the preceding page.')
+  "cursor": zod.coerce.string().min(1).max(listRunsQueryCursorMax).regex(listRunsQueryCursorRegExp).optional().describe('Opaque next_cursor from the preceding page.'),
+  "search": zod.coerce.string().max(listRunsQuerySearchMax).optional().describe('Case-insensitive literal substring search across the signed-in user\'s saved notes.'),
+  "from": zod.coerce.string().regex(listRunsQueryFromRegExp).optional().describe('Include runs started on or after this UTC calendar date.'),
+  "to": zod.coerce.string().regex(listRunsQueryToRegExp).optional().describe('Include runs started on or before this UTC calendar date.'),
+  "status": zod.enum(['pending', 'running', 'succeeded', 'failed']).optional().describe('Include only runs with this status.')
 })
 
 export const listRunsResponseItemsMax = 50;

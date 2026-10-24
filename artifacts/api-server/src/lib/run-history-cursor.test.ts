@@ -12,6 +12,14 @@ test("history cursors preserve PostgreSQL microseconds without storing note text
   assert.deepEqual(decodeHistoryCursor(encoded), { v: 1, at, id });
 });
 
+test("filter-bound cursors preserve the filter fingerprint without exposing filter text", () => {
+  const at = "2026-10-23T12:00:00.000017Z";
+  const filterHash = "a".repeat(64);
+  const encoded = encodeHistoryCursor(at, id, filterHash);
+  assert.ok(!Buffer.from(encoded, "base64url").toString().includes("search text"));
+  assert.deepEqual(decodeHistoryCursor(encoded), { v: 2, at, id, filterHash });
+});
+
 test("history cursors reject malformed, oversized, unsupported, and impossible values", () => {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
   for (const value of [
@@ -22,5 +30,6 @@ test("history cursors reject malformed, oversized, unsupported, and impossible v
     encode({ v: 1, at: "2026-10-23T25:00:00.000017Z", id }),
     encode({ v: 1, at: "2026-10-23T12:00:00.017Z", id }),
     encode({ v: 1, at: "2026-10-23T12:00:00.000017+02:00", id }),
+    encode({ v: 2, at: "2026-10-23T12:00:00.000017Z", id, filterHash: "bad" }),
   ]) assert.throws(() => decodeHistoryCursor(value), /Invalid history cursor/);
 });

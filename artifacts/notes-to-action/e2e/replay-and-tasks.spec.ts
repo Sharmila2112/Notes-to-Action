@@ -117,6 +117,10 @@ test('large run details render tasks in bounded pages and expose the complete ta
 
 test('signed-out visitors stay behind the existing sign-in gate without API reads', async ({ page, api }) => {
   await page.addInitScript(() => localStorage.setItem('fixture-signed-out', 'true'));
+  await page.goto('/runs');
+  await expect(page.getByTestId('link-sign-in')).toBeVisible();
+  await expect(page.getByTestId('input-history-search')).toHaveCount(0);
+  expect(api.historyReads).toHaveLength(0);
   await page.goto('/runs/private-run');
   await expect(page.getByTestId('link-sign-in')).toBeVisible();
   await expect(page.getByTestId('button-extract')).toHaveCount(0);

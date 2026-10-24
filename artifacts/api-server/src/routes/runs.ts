@@ -1,7 +1,7 @@
 import { Router, type IRouter, type RequestHandler, type Response } from "express";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, sql, asc, gte, lt } from "drizzle-orm";
 import {
   CreateRunBody,
   CreateRunResponse,
@@ -124,12 +124,9 @@ router.get("/runs", async (req, res): Promise<void> => {
       false,
     );
   };
-
   try {
-    if (
-      (req.query.limit !== undefined && typeof req.query.limit !== "string") ||
-      (req.query.cursor !== undefined && typeof req.query.cursor !== "string")
-    ) {
+    const stringParams = ["limit", "cursor", "search", "from", "to", "status"] as const;
+    if (stringParams.some((name) => req.query[name] !== undefined && typeof req.query[name] !== "string")) {
       rejectPagination("Invalid history pagination.");
       return;
     }
@@ -139,6 +136,23 @@ router.get("/runs", async (req, res): Promise<void> => {
       return;
     }
     pageSize = query.data.limit ?? 20;
+    const search = query.data.search?.trim() ?? "";
+    const from = query.data.from;
+    const to = query.data.to;
+    const status = query.data.status;
+    const hasFilters = Boolean(search || from || to || status);
+    const filters = { search, from: from ?? "", to: to ?? "", status: status ?? "" };
+    const filterHash = createHash("sha256").update(JSON.stringify(filters)).digest("hex");
+    const validDate = (value?: string) => {
+      if (!value) return true;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const parsed = new Date(`${value}T00:00:00.000Z`);
+      return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+    };
+    if (!validDate(from) || !validDate(to) || (from && to && from > to)) {
+      rejectPagination("Invalid history date range.");
+      return;
+    }
     let cursor: ReturnType<typeof decodeHistoryCursor> | undefined;
     try {
       if (query.data.cursor) cursor = decodeHistoryCursor(query.data.cursor);
@@ -146,7 +160,22 @@ router.get("/runs", async (req, res): Promise<void> => {
       rejectPagination("Invalid history cursor. Refresh your history and try again.");
       return;
     }
+    if (
+      cursor &&
+      ((cursor.v === 1 && hasFilters) || (cursor.v === 2 && cursor.filterHash !== filterHash))
+    ) {
+      rejectPagination("History filters changed. Refresh your history and try again.");
+      return;
+    }
     const limit = pageSize;
+    const conditions = [
+      eq(runsTable.ownerUserId, res.locals.userId),
+      cursor ? sql`(${runsTable.startedAt}, ${runsTable.id}) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : undefined,
+      search ? sql`position(lower(${search}) in lower(${runsTable.inputText})) > 0` : undefined,
+      from ? gte(runsTable.startedAt, new Date(`${from}T00:00:00.000Z`)) : undefined,
+      to ? lt(runsTable.startedAt, new Date(new Date(`${to}T00:00:00.000Z`).valueOf() + 86_400_000)) : undefined,
+      status ? eq(runsTable.status, status) : undefined,
+    ];
     const rows = await measureHistoryStage(
       historyClock,
       (durationMs) => { runQueryDurationMs = durationMs; },
@@ -161,10 +190,7 @@ router.get("/runs", async (req, res): Promise<void> => {
           cursorAt: sql<string>`to_char(${runsTable.startedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
         })
         .from(runsTable)
-        .where(and(
-          eq(runsTable.ownerUserId, res.locals.userId),
-          cursor ? sql`(${runsTable.startedAt}, ${runsTable.id}) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : undefined,
-        ))
+        .where(and(...conditions))
         .orderBy(desc(runsTable.startedAt), desc(runsTable.id))
         .limit(limit + 1),
     );
@@ -189,7 +215,7 @@ router.get("/runs", async (req, res): Promise<void> => {
         finished_at: row.finishedAt?.toISOString() ?? null,
         task_count: countById.get(row.id) ?? 0,
       })),
-      next_cursor: rows.length > limit && last ? encodeHistoryCursor(last.cursorAt, last.id) : null,
+      next_cursor: rows.length > limit && last ? encodeHistoryCursor(last.cursorAt, last.id, filterHash) : null,
     });
     res.json(response);
     recordMetric(

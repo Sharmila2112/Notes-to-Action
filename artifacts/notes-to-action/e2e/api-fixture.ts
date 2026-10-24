@@ -42,7 +42,11 @@ export class ApiFixture {
   taskPageReads: { runId: string; cursor: string }[] = [];
   unexpected: string[] = [];
   rejectCreate = false;
-  historyReads: { cursor: string | null; limit: number }[] = [];
+  historyReads: {
+    cursor: string | null;
+    limit: number;
+    filters?: { search?: string; from?: string; to?: string; status?: string };
+  }[] = [];
   rejectHistory = new Set<string>();
   private releaseHistoryPage?: () => void;
   private historyGate: Promise<void> = Promise.resolve();
@@ -84,10 +88,19 @@ export class ApiFixture {
       if (path === '/api/runs' && method === 'GET') {
         const cursor = url.searchParams.get('cursor');
         const limit = Number(url.searchParams.get('limit') ?? 20);
-        this.historyReads.push({ cursor, limit });
+        const filters = Object.fromEntries(
+          (['search', 'from', 'to', 'status'] as const)
+            .flatMap((key) => url.searchParams.has(key) ? [[key, url.searchParams.get(key)!]] : []),
+        ) as { search?: string; from?: string; to?: string; status?: string };
+        this.historyReads.push({ cursor, limit, ...(Object.keys(filters).length ? { filters } : {}) });
         if (cursor) await this.historyGate;
         if (this.rejectHistory.has(cursor ?? 'first')) return json({ error: 'Fixture history unavailable' }, 503);
-        const ordered = [...this.runs.values()].sort((a, b) =>
+        const filtered = [...this.runs.values()].filter((item) =>
+          (!filters.search || item.input_text.toLocaleLowerCase().includes(filters.search.toLocaleLowerCase()))
+          && (!filters.status || item.status === filters.status)
+          && (!filters.from || item.started_at.slice(0, 10) >= filters.from)
+          && (!filters.to || item.started_at.slice(0, 10) <= filters.to));
+        const ordered = filtered.sort((a, b) =>
           b.started_at.localeCompare(a.started_at) || b.id.localeCompare(a.id));
         const start = cursor ? ordered.findIndex((item) => item.id === cursor) + 1 : 0;
         const items = ordered.slice(start, start + limit);
