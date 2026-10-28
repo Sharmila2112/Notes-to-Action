@@ -1,3 +1,5 @@
+import { calendarDate, isValidDateOnly, normalizeTask } from "./task-rules";
+
 export const taskPriorities = ["low", "medium", "high"] as const;
 export type TaskPriority = (typeof taskPriorities)[number];
 
@@ -27,13 +29,7 @@ export function transitionRunStatus(
   return next;
 }
 
-function isValidDateOnly(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
-}
-
-export function parseModelTasks(content: string): ExtractedTask[] {
+export function parseModelTasks(content: string, referenceDate = calendarDate()): ExtractedTask[] {
   let decoded: unknown;
   try {
     decoded = JSON.parse(content);
@@ -74,16 +70,16 @@ export function parseModelTasks(content: string): ExtractedTask[] {
         ? task.due_date
         : null;
 
-    return {
+    return normalizeTask({
       title: task.title.trim(),
       owner,
       due_date: dueDate,
       priority: task.priority as TaskPriority,
-    };
+    }, referenceDate);
   });
 }
 
-export function extractTasksFromLines(input: string): ExtractedTask[] {
+export function extractTasksFromLines(input: string, referenceDate = calendarDate()): ExtractedTask[] {
   const taskPrefix = /^\s*(?:[-*]\s+|TODO\b(?:\s*[:—-]\s*|\s+)?|\[\s*\]\s*)/i;
   return input
     .split(/\r?\n/)
@@ -92,10 +88,10 @@ export function extractTasksFromLines(input: string): ExtractedTask[] {
       return match ? line.slice(match[0].length).trim() : "";
     })
     .filter(Boolean)
-    .map((title) => ({
+    .map((title) => normalizeTask({
       title,
       owner: "unassigned",
       due_date: null,
-      priority: "medium" as const,
-    }));
+      priority: "low",
+    }, referenceDate));
 }

@@ -37,11 +37,20 @@ Each extraction records start and finish events for these steps:
 1. `receive_input` — validate that notes are present and no longer than 10,000 characters.
 2. `create_run` — move the run from `pending` to `running`.
 3. `call_model` — request JSON from OpenAI `gpt-5.6-terra` through Replit AI Integrations, with a 20-second timeout.
-4. `parse_output` — validate titles and priorities; retry once with a stricter JSON prompt if parsing fails.
+4. `parse_output` — validate titles and priorities, recover named owners, and derive priorities from due dates; retry once with a stricter JSON prompt if parsing fails.
 5. `save_tasks` — persist the validated tasks.
 6. `finish_run` — mark the run `succeeded` or `failed`.
 
 ## Failure paths
+
+Extraction uses the browser's local calendar day (`reference_date`) in both
+the initial and strict prompts. API callers that omit it use the current
+Asia/Kolkata calendar day. Owners include a named recipient or meeting
+participant, not only an explicitly assigned actor. Parsing and the line
+fallback share these rules: due today through three days ahead (inclusive),
+or overdue, is HIGH; a later dated task is MEDIUM; no valid due date is LOW.
+Bare weekdays resolve to the upcoming occurrence, including today. Ambiguous
+deadlines remain unset. These values are saved, not calculated by the table.
 
 - Model timeouts and errors are retried once after a short wait. Failed and retrying attempts are stored as events.
 - Invalid JSON gets one stricter-prompt retry. If the response is still invalid, the app extracts lines beginning with `-`, `*`, `TODO`, or `[ ]` and records the fallback.

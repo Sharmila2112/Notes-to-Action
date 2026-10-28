@@ -2,3 +2,4 @@
 - [Legacy note ownership](legacy-note-ownership.md) — never assign formerly shared meeting notes to new accounts without verified ownership.
 - [Interrupted extraction policy](interrupted-extractions.md) — interruption recovery must not automatically spend model credits; retries remain an owner action.
 - [OpenAPI parameter generation](openapi-parameter-generation.md) — verify generated Zod exports when an operation combines path and query parameters.
+- [Task semantics](task-semantics.md) — named recipients and meeting participants count as owners; priorities follow the user's calendar date.

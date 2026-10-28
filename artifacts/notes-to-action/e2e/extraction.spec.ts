@@ -1,5 +1,17 @@
 import { test, expect, notes, run } from './api-fixture';
 
+test.describe('calendar reference', () => {
+  test.use({ timezoneId: 'Asia/Kolkata' });
+  test('extraction sends the user calendar day rather than the UTC day', async ({ page, api }) => {
+    await page.clock.setFixedTime(new Date('2026-10-28T23:30:00Z'));
+    await page.goto('/');
+    await page.getByTestId('input-meeting-notes').fill(notes);
+    await page.getByTestId('button-extract').click();
+    await expect.poll(() => api.posts.length).toBe(1);
+    expect(api.posts[0].reference_date).toBe('2026-10-29');
+  });
+});
+
 for (const terminal of ['succeeded', 'failed'] as const) {
   test(`Extract stays disabled through creation, pending and running, then enables on ${terminal}`, async ({ page, api }) => {
     api.holdCreate();
@@ -27,7 +39,7 @@ for (const terminal of ['succeeded', 'failed'] as const) {
     await expect(page.getByTestId(`status-run-${terminal}`)).toBeVisible();
     await expect(extract).toBeEnabled();
     await expect(page.getByTestId('input-meeting-notes')).toHaveValue(notes);
-    expect(api.posts).toEqual([{ input_text: notes, simulate_failures: false }]);
+    expect(api.posts).toEqual([{ input_text: notes, simulate_failures: false, reference_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }]);
     // Stop means stop: advancing the browser clock cannot schedule more polls.
     await page.clock.install();
     await page.clock.runFor(1200); // let an already-scheduled events poll settle
@@ -53,8 +65,8 @@ test('failed extraction preserves original notes and Retry creates a fresh run w
   await page.getByTestId('button-retry-run').click();
   await expect.poll(() => api.posts.length).toBe(2);
   expect(api.posts).toEqual([
-    { input_text: notes, simulate_failures: true },
-    { input_text: notes, simulate_failures: false },
+    { input_text: notes, simulate_failures: true, reference_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
+    { input_text: notes, simulate_failures: false, reference_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
   ]);
   await expect.poll(() => api.detailReads.get('run-2') ?? 0).toBeGreaterThan(0);
   await expect(page.getByTestId('status-run-pending')).toBeVisible();
@@ -69,7 +81,7 @@ test('retry from stored history sends original notes, disables demo mode, and na
   await page.getByTestId('button-retry-run').click();
   await expect(page).toHaveURL(/\/runs\/run-1$/);
   await expect(page.getByTestId('status-run-pending')).toBeVisible();
-  expect(api.posts).toEqual([{ input_text: notes, simulate_failures: false }]);
+  expect(api.posts).toEqual([{ input_text: notes, simulate_failures: false, reference_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }]);
   expect(api.runs.get('saved-failure')?.status).toBe('failed');
 });
 

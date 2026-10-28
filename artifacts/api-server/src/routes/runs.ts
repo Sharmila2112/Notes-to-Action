@@ -29,6 +29,7 @@ import { logger, logRunHistoryMetric, type RunHistoryMetricSink } from "../lib/l
 import { runHistoryMonitor, type RunHistoryMonitor } from "../lib/run-history-monitor";
 import { requireUser } from "../middlewares/require-user";
 import { createRunService } from "../lib/run-service";
+import { isValidDateOnly } from "../lib/task-rules";
 import { createRunStore, newLeaseExpiry, renewRunLease } from "../lib/run-store";
 import { decodeHistoryCursor, encodeHistoryCursor } from "../lib/run-history-cursor";
 
@@ -277,6 +278,8 @@ router.post("/runs", async (req, res): Promise<void> => {
     validationError = "Add some notes before extracting tasks.";
   } else if (parsedBody.data.input_text.length > MAX_INPUT_LENGTH) {
     validationError = "Notes must be 10,000 characters or fewer.";
+  } else if (parsedBody.data.reference_date && !isValidDateOnly(parsedBody.data.reference_date)) {
+    validationError = "Provide a valid calendar reference date.";
   }
 
   if (validationError) {
@@ -336,6 +339,7 @@ router.post("/runs", async (req, res): Promise<void> => {
       createdRun.id,
       validated.input_text,
       validated.simulate_failures,
+      validated.reference_date,
     );
   }, 0);
 });

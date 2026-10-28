@@ -1,5 +1,6 @@
 import type { RunEvent } from "@workspace/db";
 import { HEARTBEAT_MS, RunLeaseLostError } from "./run-lease";
+import { calendarDate } from "./task-rules";
 import {
   extractTasksFromLines,
   parseModelTasks,
@@ -43,13 +44,16 @@ export function shortDetail(value: unknown): string {
   return message.slice(0, 240);
 }
 
-function modelPrompt(input: string, strict: boolean): string {
+function modelPrompt(input: string, strict: boolean, referenceDate: string): string {
   return [
     strict
       ? "Return exactly one valid JSON object with a tasks array. Do not add markdown, prose, or code fences."
       : "Extract actionable tasks from the notes and return JSON only.",
     'Use this exact shape: {"tasks":[{"title":"...","owner":"person or unassigned","due_date":"YYYY-MM-DD or null","priority":"low|medium|high"}]}.',
     "Do not invent details. Use owner 'unassigned' and due_date null when absent. Each task must have a non-empty title and a valid priority.",
+    `Today is ${referenceDate}. Resolve relative deadlines against this calendar date, not your training date. A bare weekday means the upcoming occurrence (including today); 'end of month' means the last date of this month. If a deadline is ambiguous or tentative, use null.`,
+    "Ownership rule: use the person named in the action, including its recipient or meeting participant, and preserve that name in the task title. 'Provide Priya with the revenue numbers' has owner Priya; 'Meet with Maya to discuss the hiring plan' has owner Maya. 'Ravi to book the demo' has owner Ravi. Do not treat email addresses as deadlines or owners. Use unassigned only when no person can be identified.",
+    "Priority rule: HIGH (high) for dated tasks due within 3 calendar days of today, including today, the third day, and overdue tasks; MEDIUM (medium) for dated tasks further out; LOW (low) when due_date is null. Never default everything to medium.",
     "Meeting notes:",
     input,
   ].join("\n\n");
@@ -105,6 +109,7 @@ export function createRunService(deps: RunServiceDependencies) {
     strict: boolean,
     simulateFailures: boolean,
     attemptState: { value: number; simulationChecked: boolean },
+    referenceDate: string,
   ): Promise<string> {
     for (let localAttempt = 0; localAttempt < 2; localAttempt += 1) {
       assertLease();
@@ -127,7 +132,7 @@ export function createRunService(deps: RunServiceDependencies) {
             model: "gpt-5.6-terra",
             max_completion_tokens: 8192,
             response_format: { type: "json_object" },
-            messages: [{ role: "user", content: modelPrompt(input, strict) }],
+            messages: [{ role: "user", content: modelPrompt(input, strict, referenceDate) }],
           },
           { signal: AbortSignal.any([timeoutSignal(20_000), leaseAbort.signal]) },
         );
@@ -162,11 +167,12 @@ export function createRunService(deps: RunServiceDependencies) {
     initialContent: string,
     simulateFailures: boolean,
     attemptState: { value: number; simulationChecked: boolean },
+    referenceDate: string,
   ): Promise<ExtractedTask[]> {
     const firstStartedAt = now();
     await writeEvent(runId, "parse_output", "started", "Parsing and validating model task JSON.", 0, 1);
     try {
-      const tasks = parseModelTasks(initialContent);
+      const tasks = parseModelTasks(initialContent, referenceDate);
       await writeEvent(runId, "parse_output", "succeeded", `Found ${tasks.length} valid tasks.`, now() - firstStartedAt, 1);
       return tasks;
     } catch (firstError) {
@@ -175,11 +181,11 @@ export function createRunService(deps: RunServiceDependencies) {
         runId, "call_model", "retrying",
         "Retrying once with a stricter JSON prompt after invalid output.", 0, attemptState.value + 1,
       );
-      const strictContent = await callModelWithRetry(runId, input, true, simulateFailures, attemptState);
+      const strictContent = await callModelWithRetry(runId, input, true, simulateFailures, attemptState, referenceDate);
       const secondStartedAt = now();
       await writeEvent(runId, "parse_output", "started", "Validating the stricter model response.", 0, 2);
       try {
-        const tasks = parseModelTasks(strictContent);
+        const tasks = parseModelTasks(strictContent, referenceDate);
         await writeEvent(
           runId, "parse_output", "succeeded",
           `Strict response contained ${tasks.length} valid tasks.`, now() - secondStartedAt, 2,
@@ -191,7 +197,7 @@ export function createRunService(deps: RunServiceDependencies) {
           runId, "parse_output", "retrying",
           "Using the line-based fallback after two invalid model responses.", 0, 3,
         );
-        const tasks = extractTasksFromLines(input);
+        const tasks = extractTasksFromLines(input, referenceDate);
         await writeEvent(
           runId, "parse_output", "succeeded",
           `Fallback extracted ${tasks.length} task${tasks.length === 1 ? "" : "s"} from matching lines.`, 0, 3,
@@ -201,7 +207,7 @@ export function createRunService(deps: RunServiceDependencies) {
     }
   }
 
-  async function processRun(runId: string, input: string, simulateFailures: boolean): Promise<void> {
+  async function processRun(runId: string, input: string, simulateFailures: boolean, referenceDate = calendarDate(now())): Promise<void> {
     let renewing = false;
     const renew = async () => {
       if (!deps.renewLease) return;
@@ -220,8 +226,8 @@ export function createRunService(deps: RunServiceDependencies) {
       await renew();
       assertLease();
       const attemptState = { value: 0, simulationChecked: false };
-      const content = await callModelWithRetry(runId, input, false, simulateFailures, attemptState);
-      const tasks = await parseTasksWithRecovery(runId, input, content, simulateFailures, attemptState);
+      const content = await callModelWithRetry(runId, input, false, simulateFailures, attemptState, referenceDate);
+      const tasks = await parseTasksWithRecovery(runId, input, content, simulateFailures, attemptState, referenceDate);
       assertLease();
       const saveStartedAt = now();
       await writeEvent(runId, "save_tasks", "started", "Saving extracted tasks.");

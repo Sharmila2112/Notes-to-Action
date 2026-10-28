@@ -182,7 +182,7 @@ test("normal processing saves tasks and emits the diagram's complete ordered pro
   assert.equal(run.input_text, INPUT);
   assert.equal(run.error, null);
   assert.deepEqual(run.tasks.map(({ title, owner, due_date, priority, done }) => ({ title, owner, due_date, priority, done })), [
-    { title: "Send recap", owner: "Lee", due_date: "2026-11-04", priority: "high", done: false },
+    { title: "Send recap", owner: "Lee", due_date: "2026-11-04", priority: "medium", done: false },
   ]);
   assert.deepEqual(h.statuses, ["succeeded"]);
   assert.deepEqual(h.errors, []);
@@ -191,6 +191,41 @@ test("normal processing saves tasks and emits the diagram's complete ordered pro
   assert.equal(h.calls[0].request.model, "gpt-5.6-terra");
   assert.deepEqual(h.calls[0].request.response_format, { type: "json_object" });
   assert.equal(h.events[1].duration_ms, 7);
+});
+
+test("demo recovery persists corrected owners and date-based priorities, including strict JSON recovery", async () => {
+  const input = [
+    "Sync with Priya on the Q3 deck. She needs the revenue numbers by Friday.",
+    "Ravi to book the client demo for next week, not sure if Tuesday or Thursday works.",
+    "Follow up with legal about the vendor contract, maybe before the board call?",
+    "- Update the onboarding doc with the new pricing tiers (owner TBD, due end of month)",
+    "- Someone should check whether the staging server is still running the old build",
+    "Lunch with Maya on Wed to talk about the hiring plan.",
+  ].join("\n");
+  const staleOutput = JSON.stringify({ tasks: [
+    { title: "Provide Priya with the revenue numbers", owner: "unassigned", due_date: "2026-10-30", priority: "medium" },
+    { title: "Meet with Maya to discuss the hiring plan", owner: "unassigned", due_date: "2026-10-28", priority: "medium" },
+    { title: "Update onboarding", owner: "unassigned", due_date: "2026-10-31", priority: "medium" },
+    { title: "Ravi to book the client demo", owner: "unassigned", due_date: null, priority: "medium" },
+    { title: "Check staging", owner: "unassigned", due_date: null, priority: "medium" },
+    { title: "Schedule review", owner: "unassigned", due_date: "2026-11-02", priority: "medium" },
+  ] });
+  for (const outcomes of [[staleOutput], ["not JSON", staleOutput]]) {
+    const h = harness(outcomes, { input, roll: 0 });
+    await h.processRun(RUN_ID, input, true, "2026-10-28");
+    assert.equal(h.readRun().status, "succeeded");
+    assert.deepEqual(h.readRun().tasks.map(({ owner, priority }) => ({ owner, priority })), [
+      { owner: "Priya", priority: "high" },
+      { owner: "Maya", priority: "high" },
+      { owner: "unassigned", priority: "high" },
+      { owner: "Ravi", priority: "low" },
+      { owner: "unassigned", priority: "low" },
+      { owner: "unassigned", priority: "medium" },
+    ]);
+    assert.ok(h.events.some((event) => event.step === "call_model" && event.status === "failed" && event.detail.startsWith("(demo mode)")));
+    assert.ok(h.calls.every(({ request }) => /Today is 2026-10-28/.test(request.messages[0].content)));
+    assert.ok(h.calls.every(({ request }) => /3 calendar days/.test(request.messages[0].content)));
+  }
 });
 
 test("a provider error retries once after 350ms with the same prompt and a fresh timeout signal", async () => {
@@ -320,7 +355,7 @@ for (const [name, input, expectedTitles] of [
     assert.equal(run.input_text, input);
     assert.equal(run.error, null);
     assert.deepEqual(run.tasks.map((task) => task.title), expectedTitles);
-    assert.ok(run.tasks.every((task) => task.owner === "unassigned" && task.due_date === null && task.priority === "medium"));
+    assert.ok(run.tasks.every((task) => task.owner === "unassigned" && task.due_date === null && task.priority === "low"));
   });
 }
 

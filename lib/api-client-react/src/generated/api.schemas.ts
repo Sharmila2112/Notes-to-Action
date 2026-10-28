@@ -41,6 +41,11 @@ export const RunEventStatus = {
 export interface RunInput {
   input_text: string;
   simulate_failures: boolean;
+  /**
+     * User calendar date for resolving relative deadlines and priorities. Defaults to the current Asia/Kolkata date.
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  reference_date?: string;
 }
 
 export interface Run {

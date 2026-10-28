@@ -36,6 +36,10 @@ const stepLayers: Record<RunEventStep, string> = {
 };
 const formatDate = (value?: string | null) => value ? new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
 const formatDuration = (value?: number) => value === undefined ? '' : `${Math.round(value)} ms`;
+const currentCalendarDate = () => {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
 
 function Shell({ children }: { children: ReactNode }) {
   const [location] = useLocation();
@@ -297,7 +301,7 @@ function Home() {
   const client = useQueryClient();
   const submit = (inputText: string) => {
     if (!inputText.trim() || create.isPending || activeStatus === 'pending' || activeStatus === 'running') return;
-    create.mutate({ data: { input_text: inputText, simulate_failures: simulateFailures } }, {
+    create.mutate({ data: { input_text: inputText, simulate_failures: simulateFailures, reference_date: currentCalendarDate() } }, {
       onSuccess: (run) => {
         setText(inputText);
         setActiveRun(run.id);
@@ -444,7 +448,7 @@ function RunDetailPage() {
   const client = useQueryClient();
   const retry = (inputText: string) => {
     setPreservedInput(inputText);
-    create.mutate({ data: { input_text: inputText, simulate_failures: false } }, {
+    create.mutate({ data: { input_text: inputText, simulate_failures: false, reference_date: currentCalendarDate() } }, {
       onSuccess: (run) => {
         client.invalidateQueries({ queryKey: getListRunsQueryKey() });
         setLocation(`/runs/${run.id}`);

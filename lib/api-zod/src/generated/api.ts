@@ -64,9 +64,13 @@ export const ListRunsResponse = zod.object({
  * Ownership is assigned from the authenticated session, never from request input.
  * @summary Start a task extraction run
  */
+export const createRunBodyReferenceDateRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+
+
 export const CreateRunBody = zod.object({
   "input_text": zod.string(),
-  "simulate_failures": zod.boolean()
+  "simulate_failures": zod.boolean(),
+  "reference_date": zod.string().regex(createRunBodyReferenceDateRegExp).optional().describe('User calendar date for resolving relative deadlines and priorities. Defaults to the current Asia/Kolkata date.')
 })
 
 export const createRunResponseTwoTasksMax = 100;
