@@ -32,7 +32,6 @@ export type RunServiceDependencies = {
   ): Promise<{ choices: { message: { content?: string | null } }[] }>;
   reportError(error: unknown, runId: string, message: string): void;
   now?: () => number;
-  random?: () => number;
   sleep?: (ms: number) => Promise<void>;
   timeoutSignal?: (ms: number) => AbortSignal;
   renewLease?: (runId: string) => Promise<boolean>;
@@ -54,6 +53,7 @@ function modelPrompt(input: string, strict: boolean, referenceDate: string): str
     `Today is ${referenceDate}. Resolve relative deadlines against this calendar date, not your training date. A bare weekday means the upcoming occurrence (including today); 'end of month' means the last date of this month. If a deadline is ambiguous or tentative, use null.`,
     "Ownership rule: use the person named in the action, including its recipient or meeting participant, and preserve that name in the task title. 'Provide Priya with the revenue numbers' has owner Priya; 'Meet with Maya to discuss the hiring plan' has owner Maya. 'Ravi to book the demo' has owner Ravi. Do not treat email addresses as deadlines or owners. Use unassigned only when no person can be identified.",
     "Priority rule: HIGH (high) for dated tasks due within 3 calendar days of today, including today, the third day, and overdue tasks; MEDIUM (medium) for dated tasks further out; LOW (low) when due_date is null. Never default everything to medium.",
+    "Merge duplicate descriptions of the same work into ONE task, retaining the more specific/actionable title and earliest non-null due date. A generic sync/discussion and the concrete deliverable it describes are one task, not two. For example, 'Sync with Priya on the Q3 deck. She needs the revenue numbers by Friday' means one task, 'Provide Priya with the revenue numbers for the Q3 deck', owned by Priya and due Friday. Do not merge distinct deliverables just because they share an owner.",
     "Meeting notes:",
     input,
   ].join("\n\n");
@@ -63,7 +63,6 @@ function modelPrompt(input: string, strict: boolean, referenceDate: string): str
 export function createRunService(deps: RunServiceDependencies) {
   const { writeEvent, updateRunStatus, saveTasks, createCompletion, reportError } = deps;
   const now = deps.now ?? Date.now;
-  const random = deps.random ?? Math.random;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const timeoutSignal = deps.timeoutSignal ?? ((ms: number) => AbortSignal.timeout(ms));
   const heartbeat = deps.heartbeat ?? ((tick, intervalMs) => {
@@ -123,9 +122,7 @@ export function createRunService(deps: RunServiceDependencies) {
       try {
         if (simulateFailures && !attemptState.simulationChecked) {
           attemptState.simulationChecked = true;
-          if (random() < 0.5) {
-            throw new Error("(demo mode) Simulated first-attempt model error.");
-          }
+          throw new Error("(demo mode) Simulated first-attempt model error.");
         }
         const completion = await createCompletion(
           {
@@ -172,7 +169,7 @@ export function createRunService(deps: RunServiceDependencies) {
     const firstStartedAt = now();
     await writeEvent(runId, "parse_output", "started", "Parsing and validating model task JSON.", 0, 1);
     try {
-      const tasks = parseModelTasks(initialContent, referenceDate);
+      const tasks = parseModelTasks(initialContent, referenceDate, input);
       await writeEvent(runId, "parse_output", "succeeded", `Found ${tasks.length} valid tasks.`, now() - firstStartedAt, 1);
       return tasks;
     } catch (firstError) {
@@ -185,7 +182,7 @@ export function createRunService(deps: RunServiceDependencies) {
       const secondStartedAt = now();
       await writeEvent(runId, "parse_output", "started", "Validating the stricter model response.", 0, 2);
       try {
-        const tasks = parseModelTasks(strictContent, referenceDate);
+        const tasks = parseModelTasks(strictContent, referenceDate, input);
         await writeEvent(
           runId, "parse_output", "succeeded",
           `Strict response contained ${tasks.length} valid tasks.`, now() - secondStartedAt, 2,

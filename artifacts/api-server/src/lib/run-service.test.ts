@@ -34,10 +34,9 @@ type StoredEvent = {
 
 function harness(
   outcomes: Outcome[],
-  options: { input?: string; roll?: number; status?: RunStatus; saveError?: Error; statusError?: Error } = {},
+  options: { input?: string; status?: RunStatus; saveError?: Error; statusError?: Error } = {},
 ) {
   let clock = Date.UTC(2026, 9, 23);
-  let randomCalls = 0;
   let status: RunStatus = options.status ?? "running";
   let error: string | null = null;
   let finishedAt: string | null = null;
@@ -61,7 +60,6 @@ function harness(
 
   const service = createRunService({
     now: () => clock,
-    random: () => { randomCalls += 1; return options.roll ?? 0.9; },
     sleep: async (ms) => { sleeps.push(ms); advance(ms); },
     timeoutSignal: (ms) => {
       const controller = new AbortController();
@@ -121,7 +119,6 @@ function harness(
 
   return {
     ...service, calls, sleeps, timeouts, events, statuses, errors,
-    randomCalls: () => randomCalls,
     // Read snapshots through the same output schemas consumed by the UI.
     readRun: () => GetRunResponse.parse({
       id: RUN_ID,
@@ -187,7 +184,6 @@ test("normal processing saves tasks and emits the diagram's complete ordered pro
   assert.deepEqual(h.statuses, ["succeeded"]);
   assert.deepEqual(h.errors, []);
   assert.deepEqual(h.sleeps, []);
-  assert.equal(h.randomCalls(), 0);
   assert.equal(h.calls[0].request.model, "gpt-5.6-terra");
   assert.deepEqual(h.calls[0].request.response_format, { type: "json_object" });
   assert.equal(h.events[1].duration_ms, 7);
@@ -209,11 +205,15 @@ test("demo recovery persists corrected owners and date-based priorities, includi
     { title: "Ravi to book the client demo", owner: "unassigned", due_date: null, priority: "medium" },
     { title: "Check staging", owner: "unassigned", due_date: null, priority: "medium" },
     { title: "Schedule review", owner: "unassigned", due_date: "2026-11-02", priority: "medium" },
+    { title: "Sync with Priya on the Q3 deck", owner: "Priya", due_date: "2026-10-29", priority: "medium" },
   ] });
   for (const outcomes of [[staleOutput], ["not JSON", staleOutput]]) {
-    const h = harness(outcomes, { input, roll: 0 });
+    const h = harness(outcomes, { input });
     await h.processRun(RUN_ID, input, true, "2026-10-28");
     assert.equal(h.readRun().status, "succeeded");
+    assert.equal(h.readRun().tasks.length, 6);
+    assert.equal(h.readRun().tasks[0].title, "Provide Priya with the revenue numbers");
+    assert.equal(h.readRun().tasks[0].due_date, "2026-10-29");
     assert.deepEqual(h.readRun().tasks.map(({ owner, priority }) => ({ owner, priority })), [
       { owner: "Priya", priority: "high" },
       { owner: "Maya", priority: "high" },
@@ -286,26 +286,27 @@ for (const empty of [
 }
 
 test("demo mode fails inside the call path once, prefixes its details, and never simulates again on strict retry", async () => {
-  const h = harness(["invalid json", VALID], { roll: 0 });
+  const h = harness(["invalid json", VALID]);
   await h.processRun(RUN_ID, INPUT, true);
   assertTrace(h, [
     ...modelRetry(1), ...modelSuccess(2), ...invalidFirst(3),
     ...modelSuccess(3), ...parseSuccess(2), ...saved,
   ]);
-  assert.equal(h.randomCalls(), 1);
   assert.equal(h.calls.length, 2, "The injected first attempt must not call the provider");
   assert.ok(h.events.slice(1, 3).every((event) => event.detail.startsWith("(demo mode)")));
   assert.equal(h.readRun().status, "succeeded");
 });
 
-test("demo mode's 0.5 boundary does not fail, and disabled demo mode never samples randomness", async () => {
-  for (const [enabled, roll, expectedSamples] of [[true, 0.5, 1], [false, 0, 0]] as const) {
-    const h = harness([VALID], { roll });
+test("demo mode always fails attempt one exactly once; disabled mode never simulates", async () => {
+  for (const enabled of [true, true, true, false]) {
+    const h = harness([VALID]);
     await h.processRun(RUN_ID, INPUT, enabled);
-    assertTrace(h, [...modelSuccess(1), ...parseSuccess(1), ...saved]);
+    assertTrace(h, enabled
+      ? [...modelRetry(1), ...modelSuccess(2), ...parseSuccess(1), ...saved]
+      : [...modelSuccess(1), ...parseSuccess(1), ...saved]);
     assert.equal(h.calls.length, 1);
-    assert.equal(h.randomCalls(), expectedSamples);
-    assert.ok(h.events.every((event) => !event.detail.includes("(demo mode)")));
+    assert.equal(h.events.filter((event) => event.status === "failed" && event.detail.startsWith("(demo mode)")).length, enabled ? 1 : 0);
+    assert.equal(h.readRun().status, "succeeded");
   }
 });
 

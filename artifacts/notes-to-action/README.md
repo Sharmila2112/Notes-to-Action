@@ -54,7 +54,8 @@ deadlines remain unset. These values are saved, not calculated by the table.
 
 - Model timeouts and errors are retried once after a short wait. Failed and retrying attempts are stored as events.
 - Invalid JSON gets one stricter-prompt retry. If the response is still invalid, the app extracts lines beginning with `-`, `*`, `TODO`, or `[ ]` and records the fallback.
-- The “Simulate failures” option injects a real first-attempt model-call error about half the time. Related event details start with `(demo mode)`.
+- The “Simulate failures” option always injects a first-attempt model-call error, then retries on attempt 2. It never injects again during stricter JSON recovery. Related event details start with `(demo mode)`.
+- The prompt requests one task per piece of work. Parsing and fallback also merge repeated descriptions before saving, retaining the more specific actionable title and earliest non-null due date, with priority recalculated. Source-linked generic syncs merge into their concrete deliverable; unrelated work is not merged merely because it shares an owner.
 - Empty or overlong notes create a run before validation; invalid runs are marked failed and keep the original input and event history.
 
 ## Automated extraction tests

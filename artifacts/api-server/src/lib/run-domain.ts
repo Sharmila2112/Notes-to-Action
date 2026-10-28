@@ -1,4 +1,5 @@
 import { calendarDate, isValidDateOnly, normalizeTask } from "./task-rules";
+import { mergeDuplicateTasks } from "./task-dedup";
 
 export const taskPriorities = ["low", "medium", "high"] as const;
 export type TaskPriority = (typeof taskPriorities)[number];
@@ -29,7 +30,7 @@ export function transitionRunStatus(
   return next;
 }
 
-export function parseModelTasks(content: string, referenceDate = calendarDate()): ExtractedTask[] {
+export function parseModelTasks(content: string, referenceDate = calendarDate(), input = ""): ExtractedTask[] {
   let decoded: unknown;
   try {
     decoded = JSON.parse(content);
@@ -46,7 +47,7 @@ export function parseModelTasks(content: string, referenceDate = calendarDate())
     throw new Error("Model JSON must be an array or an object containing a tasks array");
   }
 
-  return rawTasks.map((candidate, index) => {
+  const tasks = rawTasks.map((candidate, index) => {
     if (!candidate || typeof candidate !== "object") {
       throw new Error(`Task ${index + 1} must be an object`);
     }
@@ -77,11 +78,12 @@ export function parseModelTasks(content: string, referenceDate = calendarDate())
       priority: task.priority as TaskPriority,
     }, referenceDate);
   });
+  return mergeDuplicateTasks(tasks, referenceDate, input);
 }
 
 export function extractTasksFromLines(input: string, referenceDate = calendarDate()): ExtractedTask[] {
   const taskPrefix = /^\s*(?:[-*]\s+|TODO\b(?:\s*[:—-]\s*|\s+)?|\[\s*\]\s*)/i;
-  return input
+  const tasks = input
     .split(/\r?\n/)
     .map((line) => {
       const match = line.match(taskPrefix);
@@ -94,4 +96,5 @@ export function extractTasksFromLines(input: string, referenceDate = calendarDat
       due_date: null,
       priority: "low",
     }, referenceDate));
+  return mergeDuplicateTasks(tasks, referenceDate, input);
 }
